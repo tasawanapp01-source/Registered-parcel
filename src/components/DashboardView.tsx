@@ -27,6 +27,8 @@ import {
   ShieldAlert,
   Filter,
   X,
+  Database,
+  UploadCloud,
 } from 'lucide-react';
 import { useParcelSystem } from '../context/ParcelSystemContext';
 import {
@@ -60,6 +62,12 @@ export const DashboardView: React.FC = () => {
     openWeeklyWarningPopup,
     clearAllLocalData,
     currentMember,
+    parcelBackupSummary,
+    pendingWrites,
+    isSyncing,
+    uploadStagedToFirebaseNow,
+    stageAllBackupParcelsForUpload,
+    uploadAllBackupParcelsToFirebaseNow,
   } = useParcelSystem();
 
   const isAdmin = currentMember?.role === 'ผู้ดูแลระบบ';
@@ -373,6 +381,166 @@ export const DashboardView: React.FC = () => {
           </p>
         </div>
       </div>
+
+      {/* สรุปยอดรับเข้าพัสดุรวมทุก User ในฐานข้อมูลสำรอง & สถานะพร้อมอัปโหลด */}
+      <section className="bg-white border border-indigo-200 rounded-2xl p-6 space-y-5 shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+              <Database className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900">
+                  สรุปยอดรับเข้าพัสดุรวมทุก User ในฐานข้อมูลสำรอง & สถานะพร้อมอัปโหลด
+                </h2>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 font-semibold">
+                  {parcelBackupSummary.backupFilePath}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                รวมรายการรับเข้าพัสดุจากผู้ใช้งานทุกคน ({parcelBackupSummary.byUser.length} User) ในฐานข้อมูลสำรองกลางของระบบ พร้อมส่งขึ้น Firebase
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {pendingWrites.length > 0 && (
+              <button
+                type="button"
+                onClick={() => void uploadStagedToFirebaseNow()}
+                disabled={isSyncing}
+                className="min-h-[40px] px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                <UploadCloud className="w-4 h-4 shrink-0" />
+                <span>อัปโหลดคิวรอส่งขึ้น Firebase ({pendingWrites.length})</span>
+              </button>
+            )}
+
+            {parcelBackupSummary.unstagedBackupParcelsCount > 0 && (
+              <button
+                type="button"
+                onClick={() => void stageAllBackupParcelsForUpload()}
+                disabled={isSyncing}
+                className="min-h-[40px] px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                <Clock className="w-4 h-4 text-amber-700 shrink-0" />
+                <span>
+                  เตรียมพัสดุสำรองพร้อมอัปโหลด (+{parcelBackupSummary.unstagedBackupParcelsCount})
+                </span>
+              </button>
+            )}
+
+            {parcelBackupSummary.totalParcelsInBackup > 0 && (
+              <button
+                type="button"
+                onClick={() => void uploadAllBackupParcelsToFirebaseNow()}
+                disabled={isSyncing}
+                className="min-h-[40px] px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                <UploadCloud className="w-4 h-4 shrink-0" />
+                <span>
+                  อัปโหลดพัสดุทั้งหมดขึ้น Firebase ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น)
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-200">
+            <span className="text-[11px] font-semibold text-indigo-800 block">
+              พัสดุทั้งหมดในฐานข้อมูลสำรอง (ทุก User)
+            </span>
+            <div className="text-2xl font-mono font-extrabold text-indigo-950 tabular-nums mt-1">
+              {parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-emerald-50/70 border border-emerald-200">
+            <span className="text-[11px] font-semibold text-emerald-800 block">
+              รับเข้าวันนี้ (ทุก User)
+            </span>
+            <div className="text-2xl font-mono font-extrabold text-emerald-900 tabular-nums mt-1">
+              {parcelBackupSummary.todayParcelsInBackup.toLocaleString()} ชิ้น
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-amber-50/80 border border-amber-200">
+            <span className="text-[11px] font-semibold text-amber-900 block">
+              คิวพร้อมอัปโหลดขึ้น Firebase
+            </span>
+            <div className="text-2xl font-mono font-extrabold text-amber-950 tabular-nums mt-1">
+              {parcelBackupSummary.totalPendingItemsToUpload.toLocaleString()} รายการ
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+            <span className="text-[11px] font-semibold text-slate-600 block">
+              พัสดุสำรองที่ยังไม่เข้าคิวส่ง
+            </span>
+            <div className="text-2xl font-mono font-extrabold text-slate-900 tabular-nums mt-1">
+              {parcelBackupSummary.unstagedBackupParcelsCount.toLocaleString()} ชิ้น
+            </div>
+          </div>
+        </div>
+
+        {parcelBackupSummary.byUser.length === 0 ? (
+          <div className="border border-dashed border-slate-300 rounded-xl p-6 text-center text-xs text-slate-500">
+            ยังไม่มีข้อมูลพัสดุในฐานข้อมูลสำรอง
+          </div>
+        ) : (
+          <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold">
+                  <th className="py-3 px-4">ผู้บันทึก / ผู้ใช้งาน (User)</th>
+                  <th className="py-3 px-4">บทบาท (Role)</th>
+                  <th className="py-3 px-4 text-right">ยอดรับเข้าทั้งหมด (สำรอง)</th>
+                  <th className="py-3 px-4 text-right">รับเข้าวันนี้</th>
+                  <th className="py-3 px-4 text-right">รออัปโหลดขึ้น Firebase</th>
+                  <th className="py-3 px-4 text-right">บันทึกล่าสุด</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {parcelBackupSummary.byUser.map((u) => (
+                  <tr key={u.userKey} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="py-2.5 px-4 font-bold text-slate-900">{u.userName}</td>
+                    <td className="py-2.5 px-4">
+                      <span className="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-700 font-semibold text-[11px]">
+                        {u.userRole}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 text-right font-mono font-extrabold text-indigo-700 tabular-nums">
+                      {u.totalParcels.toLocaleString()} ชิ้น
+                    </td>
+                    <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-700 tabular-nums">
+                      {u.todayParcels.toLocaleString()} ชิ้น
+                    </td>
+                    <td className="py-2.5 px-4 text-right font-mono font-bold tabular-nums">
+                      {u.pendingUploadCount > 0 ? (
+                        <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900">
+                          {u.pendingUploadCount.toLocaleString()} รายการ
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">0 รายการ</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-4 text-right font-mono text-slate-500 text-[11px]">
+                      {u.lastRecordedAt
+                        ? new Date(u.lastRecordedAt).toLocaleString('th-TH', {
+                            dateStyle: 'short',
+                            timeStyle: 'short',
+                          })
+                        : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       {/* กราฟเส้นเปรียบเทียบรายวัน/สัปดาห์ & กราฟวิเคราะห์ช่วงเวลาพีคสุด (Peak Hours) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

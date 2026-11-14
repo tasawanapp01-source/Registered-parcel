@@ -185,6 +185,7 @@ export function buildValidParcelPayload(p: Parcel, ownerId: string) {
   const validStatuses = [
     'ลงทะเบียนรับพัสดุ',
     'รับเข้าส่วนกลาง',
+    'ติดต่องานพยาบาล',
     'ติดนิติการ',
     'พัสดุไม่ทราบเจ้าของ',
     'รอการยืนยัน',

@@ -59,6 +59,9 @@ export interface Parcel {
   deliveredDate?: string;  // YYYY-MM-DD วันที่นักเรียนเซ็นรับพัสดุ
   isSixDigitsInput?: boolean; // ระบุว่าผ่านการกรอกเลขพัสดุ 6 ตัวสุดท้ายหรือไม่
   ownerId: string;         // UID เจ้าหน้าที่ผู้สแกนรับ
+  recordedByMemberId?: string; // memberId ของ User ที่บันทึกข้อมูลในระบบ
+  recordedByName?: string;     // ชื่อแสดงผลของ User ที่บันทึก
+  recordedByRole?: string;     // บทบาทของ User ที่บันทึก
   createdAt: string;       // ISO timestamp
   updatedAt: string;       // ISO timestamp
 }
@@ -228,6 +231,9 @@ export interface PendingWriteItem {
   action: 'upsert' | 'delete';
   data?: Student | Parcel | Member | RolePermission | ParcelRateLimitConfig;
   queuedAt: string;
+  queuedByMemberId?: string;
+  queuedByName?: string;
+  queuedByRole?: string;
 }
 
 export interface LocalBackupStatus {
@@ -250,6 +256,38 @@ export interface StudentBackupStatus {
   serverFileActive: boolean;
   indexedDbActive: boolean;
   source: string | null;
+}
+
+export interface ParcelBackupStatus {
+  count: number;
+  updatedAt: string | null;
+  filePath: string;
+  serverFileActive: boolean;
+  indexedDbActive: boolean;
+  source: string | null;
+}
+
+export interface UserParcelBackupStat {
+  userKey: string;
+  userName: string;
+  userRole: string;
+  totalParcels: number;
+  todayParcels: number;
+  pendingUploadCount: number;
+  lastRecordedAt?: string | null;
+}
+
+export interface ParcelBackupSummary {
+  totalParcelsInBackup: number;
+  todayParcelsInBackup: number;
+  pendingParcelsToUpload: number;
+  totalPendingItemsToUpload: number;
+  unstagedBackupParcelsCount: number;
+  byUser: UserParcelBackupStat[];
+  serverFileActive: boolean;
+  indexedDbActive: boolean;
+  backupFilePath: string;
+  updatedAt: string | null;
 }
 
 export interface QuotaMetrics {

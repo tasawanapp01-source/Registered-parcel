@@ -16,9 +16,13 @@ import {
   PendingWriteItem,
   LocalBackupStatus,
   StudentBackupStatus,
+  ParcelBackupStatus,
+  ParcelBackupSummary,
+  UserParcelBackupStat,
   FirestoreConnectionStatus,
   QuotaMetrics,
   getRelativeDateString,
+  extractParcelLocalYMD,
   isUnknownOwnerParcel,
   StudentParcelCountStats,
   WEEKLY_PARCEL_WARNING_LIMIT,
@@ -53,6 +57,8 @@ import {
   clearStagedBackupAfterUpload,
   saveAllStudentsToBackupDb,
   loadAllStudentsFromBackupDb,
+  saveAllParcelsToBackupDb,
+  loadAllParcelsFromBackupDb,
   getLocalTodayYMD,
   getNextMidnightScheduleInfo,
 } from '../services/localBackupStore';
@@ -168,6 +174,8 @@ interface ParcelSystemContextValue {
   pendingWrites: PendingWriteItem[];
   localBackupStatus: LocalBackupStatus;
   studentBackupStatus: StudentBackupStatus;
+  parcelBackupStatus: ParcelBackupStatus;
+  parcelBackupSummary: ParcelBackupSummary;
   firestoreConnectionStatus: FirestoreConnectionStatus;
   quotaMetrics: QuotaMetrics;
   syncMode: SyncMode;
@@ -211,6 +219,9 @@ interface ParcelSystemContextValue {
   clearAllStudents: () => Promise<void>;
   backupAllStudentsNow: () => Promise<StudentBackupStatus>;
   restoreStudentsFromBackupDb: () => Promise<number>;
+  stageAllBackupParcelsForUpload: () => Promise<number>;
+  uploadAllBackupParcelsToFirebaseNow: () => Promise<void>;
+  refreshFromLocalBackupServer: () => Promise<void>;
   syncPendingToFirebase: () => Promise<void>;
   uploadStagedToFirebaseNow: () => Promise<void>;
   pullFromFirebaseToLocal: () => Promise<void>;
@@ -317,6 +328,14 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     indexedDbActive: false,
     source: null,
   });
+  const [parcelBackupStatus, setParcelBackupStatus] = useState<ParcelBackupStatus>({
+    count: 0,
+    updatedAt: null,
+    filePath: 'data/parcels-backup.json',
+    serverFileActive: false,
+    indexedDbActive: false,
+    source: null,
+  });
 
   const [toastMessage, setToastMessage] = useState<{
     text: string;
@@ -342,6 +361,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const studentsRef = useRef<Student[]>(students);
   const parcelsRef = useRef<Parcel[]>(parcels);
   const membersRef = useRef<Member[]>(members);
+  const currentMemberIdRef = useRef<string | null>(currentMemberId);
   const rolePermissionsRef = useRef<RolePermission[]>(rolePermissions);
   const rateLimitRef = useRef<ParcelRateLimitConfig>(parcelRateLimitConfig);
   const pendingWritesRef = useRef<PendingWriteItem[]>(pendingWrites);
@@ -357,6 +377,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     membersRef.current = members;
   }, [members]);
   useEffect(() => {
+    currentMemberIdRef.current = currentMemberId;
+  }, [currentMemberId]);
+  useEffect(() => {
     rolePermissionsRef.current = rolePermissions;
   }, [rolePermissions]);
   useEffect(() => {
@@ -368,6 +391,25 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
   useEffect(() => {
     localBackupStatusRef.current = localBackupStatus;
   }, [localBackupStatus]);
+
+  const getCurrentActorAttribution = useCallback(() => {
+    const activeId = currentMemberIdRef.current;
+    const matched = activeId
+      ? membersRef.current.find((m) => m.memberId === activeId && m.active)
+      : null;
+    if (!matched) {
+      return {
+        memberId: 'shared_system',
+        name: 'ระบบสำรองกลาง',
+        role: 'ระบบ',
+      };
+    }
+    return {
+      memberId: matched.memberId,
+      name: matched.fullName || matched.username || matched.role,
+      role: matched.role,
+    };
+  }, []);
 
   const showToast = useCallback(
     (text: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
@@ -480,7 +522,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     []
   );
 
-  // บันทึกรายการเปลี่ยนแปลงลงไฟล์สำรองรออัพโหลด (data/pending-upload-backup.json + localStorage) ก่อนขึ้น Firebase
+  // บันทึกรายการเปลี่ยนแปลงลงไฟล์สำรองรออัพโหลด (data/pending-upload-backup.json + data/parcels-backup.json + localStorage) ก่อนขึ้น Firebase
   const stagePendingWrites = useCallback(
     async (
       newItems: PendingWriteItem[],
@@ -490,11 +532,17 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         members?: Member[];
         rolePermissions?: RolePermission[];
         rateLimitConfig?: ParcelRateLimitConfig;
+      },
+      options?: {
+        replaceCacheParcels?: boolean;
+        replacePending?: boolean;
       }
     ) => {
       const mergedMap = new Map<string, PendingWriteItem>();
-      for (const item of pendingWritesRef.current) {
-        mergedMap.set(`${item.collection}:${item.docId}`, item);
+      if (!options?.replacePending) {
+        for (const item of pendingWritesRef.current) {
+          mergedMap.set(`${item.collection}:${item.docId}`, item);
+        }
       }
       for (const item of newItems) {
         mergedMap.set(`${item.collection}:${item.docId}`, item);
@@ -518,12 +566,62 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         lastUploadedAt: localBackupStatusRef.current.lastUploadedAt,
       };
 
-      const res = await saveStagedWritesToLocalFile(nextPending, cachePayload);
+      const res = await saveStagedWritesToLocalFile(nextPending, cachePayload, {
+        appendItems: newItems,
+        replacePending: options?.replacePending,
+        replaceCacheParcels: options?.replaceCacheParcels,
+      });
+
+      const finalPending =
+        Array.isArray(res.mergedPendingWrites) && res.mergedPendingWrites.length > 0
+          ? res.mergedPendingWrites
+          : options?.replacePending
+          ? nextPending
+          : nextPending;
+
+      if (finalPending !== nextPending) {
+        pendingWritesRef.current = finalPending;
+        setPendingWrites(finalPending);
+        setQuotaMetrics((prev) => ({
+          ...prev,
+          batchedWritesQueued: finalPending.length,
+        }));
+      }
+
+      if (finalPending.length > nextPending.length && !options?.replaceCacheParcels) {
+        const appliedWithServer = applyPendingItemsToSnapshot(
+          {
+            students: cachePayload.students,
+            parcels: cachePayload.parcels,
+            members: cachePayload.members,
+            rolePermissions: cachePayload.rolePermissions,
+            rateLimitConfig: cachePayload.rateLimitConfig,
+          },
+          finalPending
+        );
+        setParcels(appliedWithServer.parcels);
+        setParcelBackupStatus((prev) => ({
+          ...prev,
+          count: appliedWithServer.parcels.length,
+          updatedAt: new Date().toISOString(),
+          serverFileActive: res.serverFileActive || prev.serverFileActive,
+          source: 'multi_user_staged_merge',
+        }));
+      } else if (nextCache?.parcels) {
+        setParcelBackupStatus((prev) => ({
+          ...prev,
+          count: nextCache.parcels!.length,
+          updatedAt: new Date().toISOString(),
+          serverFileActive: res.serverFileActive || prev.serverFileActive,
+          source: 'auto_stage_parcel_backup',
+        }));
+      }
+
       setLocalBackupStatus((prev) => ({
         ...prev,
         serverFileActive: res.serverFileActive,
         stagingFileExists: res.stagingFileExists,
-        stagedCount: nextPending.length,
+        stagedCount: finalPending.length,
         nextScheduledUploadAt: getNextMidnightScheduleInfo().isoString,
       }));
       if (nextCache?.students) {
@@ -536,10 +634,10 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         }));
       }
     },
-    []
+    [applyPendingItemsToSnapshot]
   );
 
-  // ดึงข้อมูลจาก Firebase (ถ้าเชื่อมต่อไม่ได้หรือ Quota เต็ม ให้สลับไปใช้ฐานข้อมูลสำรองรายชื่อนักเรียนอัตโนมัติ)
+  // ดึงข้อมูลจาก Firebase (ถ้าเชื่อมต่อไม่ได้หรือ Quota เต็ม ให้สลับไปใช้ฐานข้อมูลสำรองรายชื่อนักเรียนและพัสดุอัตโนมัติ)
   const loadDataDirectlyFromFirestore = useCallback(async (): Promise<{
     success: boolean;
     quotaExceeded?: boolean;
@@ -548,7 +646,10 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     setIsSyncing(true);
     const applyStudentBackupFallback = async (mode: 'quota_exceeded' | 'offline_fallback') => {
       setFirestoreConnectionStatus(mode);
-      const backup = await loadAllStudentsFromBackupDb();
+      const [backup, parcelBackup] = await Promise.all([
+        loadAllStudentsFromBackupDb(),
+        loadAllParcelsFromBackupDb(),
+      ]);
       setStudentBackupStatus({
         count: backup.count,
         updatedAt: backup.updatedAt,
@@ -557,19 +658,35 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         indexedDbActive: backup.indexedDbActive,
         source: backup.source,
       });
+      setParcelBackupStatus({
+        count: parcelBackup.count,
+        updatedAt: parcelBackup.updatedAt,
+        filePath: parcelBackup.filePath,
+        serverFileActive: parcelBackup.serverFileActive,
+        indexedDbActive: parcelBackup.indexedDbActive,
+        source: parcelBackup.source,
+      });
 
-      if (backup.students.length > 0 && studentsRef.current.length === 0) {
+      if (
+        (backup.students.length > 0 && studentsRef.current.length === 0) ||
+        (parcelBackup.parcels.length > 0 && parcelsRef.current.length === 0)
+      ) {
         const applied = applyPendingItemsToSnapshot(
           {
-            students: backup.students,
-            parcels: parcelsRef.current,
+            students: studentsRef.current.length > 0 ? studentsRef.current : backup.students,
+            parcels: parcelsRef.current.length > 0 ? parcelsRef.current : parcelBackup.parcels,
             members: membersRef.current,
             rolePermissions: rolePermissionsRef.current,
             rateLimitConfig: rateLimitRef.current,
           },
           pendingWritesRef.current
         );
-        setStudents(applied.students);
+        if (studentsRef.current.length === 0 && applied.students.length > 0) {
+          setStudents(applied.students);
+        }
+        if (parcelsRef.current.length === 0 && applied.parcels.length > 0) {
+          setParcels(applied.parcels);
+        }
       }
     };
 
@@ -584,7 +701,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       if (data.connectionFailed) {
         await applyStudentBackupFallback('offline_fallback');
         showToast(
-          `ไม่สามารถเชื่อมต่อ Firestore ได้ ระบบกำลังใช้รายชื่อนักเรียนจากฐานข้อมูลสำรอง (${studentsRef.current.length} คน)`,
+          `ไม่สามารถเชื่อมต่อ Firestore ได้ ระบบกำลังใช้ข้อมูลจากฐานข้อมูลสำรอง (นักเรียน ${studentsRef.current.length} คน · พัสดุ ${parcelsRef.current.length} ชิ้น)`,
           'warning'
         );
         return { success: false, connectionFailed: true };
@@ -593,10 +710,29 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       setQuotaExceeded(false);
       setFirestoreConnectionStatus('connected');
 
+      // รักษารายละเอียด attribution ที่บันทึกไว้ในฐานข้อมูลสำรองของเครื่อง/เซิร์ฟเวอร์ (เช่น recordedByName)
+      const localAttrMap = new Map<string, Parcel>();
+      for (const lp of parcelsRef.current) {
+        localAttrMap.set(lp.id || lp.trackingNumber, lp);
+      }
+      const enrichedCloudParcels = data.parcels.map((cp) => {
+        const key = cp.id || cp.trackingNumber;
+        const localP = localAttrMap.get(key);
+        if (localP?.recordedByMemberId || localP?.recordedByName) {
+          return {
+            ...cp,
+            recordedByMemberId: localP.recordedByMemberId,
+            recordedByName: localP.recordedByName,
+            recordedByRole: localP.recordedByRole,
+          };
+        }
+        return cp;
+      });
+
       const applied = applyPendingItemsToSnapshot(
         {
           students: data.students,
-          parcels: data.parcels,
+          parcels: enrichedCloudParcels,
           members: data.members.length > 0 ? data.members : INITIAL_MEMBERS,
           rolePermissions:
             data.rolePermissions.length > 0 ? data.rolePermissions : INITIAL_ROLE_PERMISSIONS,
@@ -628,7 +764,10 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         lastUploadedAt: localBackupStatusRef.current.lastUploadedAt,
       });
 
-      const backupSaved = await saveAllStudentsToBackupDb(applied.students, 'firestore_sync');
+      const [backupSaved, parcelBackupSaved] = await Promise.all([
+        saveAllStudentsToBackupDb(applied.students, 'firestore_sync'),
+        saveAllParcelsToBackupDb(applied.parcels, 'firestore_sync'),
+      ]);
       setStudentBackupStatus({
         count: backupSaved.count,
         updatedAt: backupSaved.updatedAt,
@@ -636,6 +775,14 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         serverFileActive: backupSaved.serverFileActive,
         indexedDbActive: backupSaved.indexedDbActive,
         source: backupSaved.source,
+      });
+      setParcelBackupStatus({
+        count: parcelBackupSaved.count,
+        updatedAt: parcelBackupSaved.updatedAt,
+        filePath: parcelBackupSaved.filePath,
+        serverFileActive: parcelBackupSaved.serverFileActive,
+        indexedDbActive: parcelBackupSaved.indexedDbActive,
+        source: parcelBackupSaved.source,
       });
 
       setQuotaMetrics((prev) => ({
@@ -652,7 +799,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
       await applyStudentBackupFallback('offline_fallback');
       showToast(
-        `ไม่สามารถเชื่อมต่อ Firestore ได้ ระบบกำลังใช้รายชื่อนักเรียนจากฐานข้อมูลสำรอง (${studentsRef.current.length} คน)`,
+        `ไม่สามารถเชื่อมต่อ Firestore ได้ ระบบกำลังใช้ข้อมูลจากฐานข้อมูลสำรอง (${studentsRef.current.length} คน)`,
         'warning'
       );
       return { success: false, connectionFailed: true };
@@ -661,10 +808,10 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
   }, [firebaseAuthUser?.uid, handleQuotaExceeded, applyPendingItemsToSnapshot, showToast]);
 
-  // อัปโหลดข้อมูลทั้งหมดในไฟล์สำรองขึ้น Firebase แล้วลบไฟล์สำรองรออัพโหลดออกจากระบบ
+  // อัปโหลดข้อมูลทั้งหมดในไฟล์สำรองขึ้น Firebase แล้วลบรายการที่อัปโหลดออกจากไฟล์สำรองรออัพโหลด
   const uploadStagedToFirebase = useCallback(
     async (options?: { isAutoMidnight?: boolean }) => {
-      const itemsToUpload = pendingWritesRef.current;
+      const itemsToUpload = [...pendingWritesRef.current];
       if (itemsToUpload.length === 0) {
         if (!options?.isAutoMidnight) {
           showToast('ไม่มีข้อมูลค้างอัปโหลดในไฟล์สำรองระบบ', 'info');
@@ -692,7 +839,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         if (result.connectionFailed) {
           setFirestoreConnectionStatus('offline_fallback');
           showToast(
-            'ไม่สามารถเชื่อมต่อ Firestore ได้ ข้อมูลและรายชื่อนักเรียนทั้งหมดยังคงปลอดภัยอยู่ในฐานข้อมูลสำรองในระบบ',
+            'ไม่สามารถเชื่อมต่อ Firestore ได้ ข้อมูลพัสดุและรายชื่อนักเรียนทั้งหมดยังคงปลอดภัยอยู่ในฐานข้อมูลสำรองในระบบ',
             'warning'
           );
           return;
@@ -701,22 +848,25 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         const now = new Date();
         const nowIso = now.toISOString();
         const todayYMD = getLocalTodayYMD(now);
+        const uploadedKeys = itemsToUpload.map((item) => `${item.collection}:${item.docId}`);
 
-        // อัปโหลดสำเร็จ -> ลบไฟล์ข้อมูลสำรองรออัพโหลดในระบบออกทันที (คงไฟล์ฐานข้อมูลสำรองรายชื่อนักเรียนไว้)
+        // อัปโหลดสำเร็จ -> ลบเฉพาะรายการที่อัปโหลดแล้วออกจากคิวสำรองรออัพโหลด (คงฐานข้อมูลสำรองถาวรไว้ และคงรายการที่ user อื่นเพิ่มเข้ามาใหม่ระหว่างอัปโหลด)
         const clearRes = await clearStagedBackupAfterUpload({
           lastAutoUploadDate: todayYMD,
           lastUploadedAt: nowIso,
+          uploadedKeys,
         });
 
-        pendingWritesRef.current = [];
-        setPendingWrites([]);
+        const remainingPending = clearRes.remainingPending || [];
+        pendingWritesRef.current = remainingPending;
+        setPendingWrites(remainingPending);
         setQuotaExceeded(false);
         setFirestoreConnectionStatus('connected');
         setLocalBackupStatus((prev) => ({
           ...prev,
           serverFileActive: clearRes.serverFileActive,
-          stagingFileExists: false,
-          stagedCount: 0,
+          stagingFileExists: remainingPending.length > 0,
+          stagedCount: remainingPending.length,
           lastAutoUploadDate: todayYMD,
           lastUploadedAt: nowIso,
           nextScheduledUploadAt: getNextMidnightScheduleInfo(now).isoString,
@@ -724,15 +874,15 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
         setQuotaMetrics((prev) => ({
           ...prev,
-          batchedWritesQueued: 0,
+          batchedWritesQueued: remainingPending.length,
           firestoreWritesUsed: prev.firestoreWritesUsed + result.uploadedCount,
           lastSyncedAt: nowIso,
         }));
 
         showToast(
           options?.isAutoMidnight
-            ? `อัปโหลดข้อมูลอัตโนมัติ (00.00 น.) ขึ้น Firebase สำเร็จ ${result.uploadedCount} รายการ และลบไฟล์สำรองรออัพโหลดในระบบเรียบร้อยแล้ว`
-            : `อัปโหลดข้อมูลขึ้น Firebase สำเร็จ ${result.uploadedCount} รายการ และลบไฟล์สำรองรออัพโหลดในระบบเรียบร้อยแล้ว`,
+            ? `อัปโหลดข้อมูลอัตโนมัติ (00.00 น.) ขึ้น Firebase สำเร็จ ${result.uploadedCount} รายการ และล้างคิวรอส่งในระบบเรียบร้อยแล้ว`
+            : `อัปโหลดข้อมูลขึ้น Firebase สำเร็จ ${result.uploadedCount} รายการ และล้างคิวรอส่งเรียบร้อยแล้ว`,
           'success'
         );
       } catch (err) {
@@ -769,12 +919,17 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           ? store.cache.students
           : store.studentsBackup.students;
 
+      const cachedParcels =
+        store.parcelsBackup?.parcels && store.parcelsBackup.parcels.length > 0
+          ? store.parcelsBackup.parcels
+          : store.cache?.parcels || [];
+
       const hasCachedData =
-        cachedStudents.length > 0 || (store.cache?.parcels?.length || 0) > 0;
+        cachedStudents.length > 0 || cachedParcels.length > 0;
 
       const baseSnapshot = {
         students: cachedStudents,
-        parcels: store.cache?.parcels || [],
+        parcels: cachedParcels,
         members:
           store.cache?.members && store.cache.members.length > 0
             ? store.cache.members
@@ -816,6 +971,15 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         source: store.studentsBackup.source,
       });
 
+      setParcelBackupStatus({
+        count: applied.parcels.length,
+        updatedAt: store.parcelsBackup.updatedAt,
+        filePath: store.parcelsBackup.filePath,
+        serverFileActive: store.parcelsBackup.serverFileActive,
+        indexedDbActive: store.parcelsBackup.indexedDbActive,
+        source: store.parcelsBackup.source,
+      });
+
       setQuotaMetrics((prev) => ({
         ...prev,
         batchedWritesQueued: store.pendingWrites.length,
@@ -844,6 +1008,85 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
     bootstrapFromLocalFirst();
   }, [applyPendingItemsToSnapshot, loadDataDirectlyFromFirestore, uploadStagedToFirebase]);
+
+  // รีเฟรชยอดรวมพัสดุและคิวรออัปโหลดจากฐานข้อมูลสำรองกลางของเซิร์ฟเวอร์ (เพื่อรวมยอดทุก User ที่ใช้งานพร้อมกัน)
+  const refreshFromLocalBackupServer = useCallback(async (): Promise<void> => {
+    try {
+      const store = await loadLocalBackupStore();
+      if (!store.serverFileActive) return;
+
+      const serverParcels =
+        store.parcelsBackup.parcels.length > 0
+          ? store.parcelsBackup.parcels
+          : store.cache?.parcels || [];
+
+      const applied = applyPendingItemsToSnapshot(
+        {
+          students:
+            store.cache?.students && store.cache.students.length > 0
+              ? store.cache.students
+              : studentsRef.current,
+          parcels: serverParcels,
+          members:
+            store.cache?.members && store.cache.members.length > 0
+              ? store.cache.members
+              : membersRef.current,
+          rolePermissions:
+            store.cache?.rolePermissions && store.cache.rolePermissions.length > 0
+              ? store.cache.rolePermissions
+              : rolePermissionsRef.current,
+          rateLimitConfig: store.cache?.rateLimitConfig || rateLimitRef.current,
+        },
+        store.pendingWrites
+      );
+
+      setParcels(applied.parcels);
+      pendingWritesRef.current = store.pendingWrites;
+      setPendingWrites(store.pendingWrites);
+      setLocalBackupStatus((prev) => ({
+        ...prev,
+        serverFileActive: store.serverFileActive,
+        stagingFileExists: store.stagingFileExists,
+        stagedCount: store.pendingWrites.length,
+        lastAutoUploadDate: store.cache?.lastAutoUploadDate || prev.lastAutoUploadDate,
+        lastUploadedAt: store.cache?.lastUploadedAt || prev.lastUploadedAt,
+      }));
+      setParcelBackupStatus({
+        count: applied.parcels.length,
+        updatedAt: store.parcelsBackup.updatedAt,
+        filePath: store.parcelsBackup.filePath,
+        serverFileActive: store.parcelsBackup.serverFileActive,
+        indexedDbActive: store.parcelsBackup.indexedDbActive,
+        source: store.parcelsBackup.source,
+      });
+      setQuotaMetrics((prev) => ({
+        ...prev,
+        batchedWritesQueued: store.pendingWrites.length,
+      }));
+    } catch {
+      // ignore background refresh failures
+    }
+  }, [applyPendingItemsToSnapshot]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      void refreshFromLocalBackupServer();
+    };
+    window.addEventListener('focus', onFocus);
+    const interval = setInterval(() => {
+      void refreshFromLocalBackupServer();
+    }, 15000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      clearInterval(interval);
+    };
+  }, [refreshFromLocalBackupServer]);
+
+  useEffect(() => {
+    if (hasBootstrappedRef.current && currentMemberId) {
+      void refreshFromLocalBackupServer();
+    }
+  }, [currentMemberId, refreshFromLocalBackupServer]);
 
   // ตั้งเวลาอัปโหลดอัตโนมัติทุกวันเวลา 00.00 น. ของทุกวัน และลบไฟล์สำรองในระบบหลังอัปโหลดสำเร็จ
   useEffect(() => {
@@ -1202,6 +1445,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
       const now = new Date();
       const isoNow = now.toISOString();
+      const actor = getCurrentActorAttribution();
 
       const newParcel: Parcel = {
         id: trackingNumber,
@@ -1224,6 +1468,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         receivedDate: getRelativeDateString(0),
         receivedHour: now.getHours(),
         ownerId: AUTO_CLOUD_OWNER_ID,
+        recordedByMemberId: actor.memberId,
+        recordedByName: actor.name,
+        recordedByRole: actor.role,
         createdAt: isoNow,
         updatedAt: isoNow,
       };
@@ -1241,6 +1488,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         action: 'upsert',
         data: newParcel,
         queuedAt: isoNow,
+        queuedByMemberId: actor.memberId,
+        queuedByName: actor.name,
+        queuedByRole: actor.role,
       };
       await stagePendingWrites([stagedItem], { parcels: nextParcels });
       showToast(
@@ -1263,7 +1513,14 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
       return newParcel;
     },
-    [lookupStudentByCode, stagePendingWrites, openWeeklyWarningPopup, showToast, parcelRateLimitConfig]
+    [
+      lookupStudentByCode,
+      getCurrentActorAttribution,
+      stagePendingWrites,
+      openWeeklyWarningPopup,
+      showToast,
+      parcelRateLimitConfig,
+    ]
   );
 
   /**
@@ -1281,6 +1538,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           ? (deliveredDate || getRelativeDateString(0)).slice(0, 20)
           : '';
       const isoNow = new Date().toISOString();
+      const actor = getCurrentActorAttribution();
 
       let updatedTarget: Parcel | null = null;
       const nextParcels = parcelsRef.current.map((p) => {
@@ -1290,6 +1548,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             status: newStatus,
             ...(note !== undefined ? { note: note.slice(0, 300) } : {}),
             deliveredDate: effectiveDeliveredDate,
+            recordedByMemberId: p.recordedByMemberId || actor.memberId,
+            recordedByName: p.recordedByName || actor.name,
+            recordedByRole: p.recordedByRole || actor.role,
             updatedAt: isoNow,
           };
           return updatedTarget;
@@ -1309,6 +1570,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             action: 'upsert',
             data: updatedTarget,
             queuedAt: isoNow,
+            queuedByMemberId: actor.memberId,
+            queuedByName: actor.name,
+            queuedByRole: actor.role,
           },
         ],
         { parcels: nextParcels }
@@ -1319,7 +1583,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         'success'
       );
     },
-    [stagePendingWrites, showToast]
+    [getCurrentActorAttribution, stagePendingWrites, showToast]
   );
 
   /**
@@ -1328,12 +1592,16 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const updateParcelDetails = useCallback(
     async (parcelId: string, updates: Partial<Parcel>): Promise<void> => {
       const isoNow = new Date().toISOString();
+      const actor = getCurrentActorAttribution();
       let updatedTarget: Parcel | null = null;
       const nextParcels = parcelsRef.current.map((p) => {
         if ((p.id || p.trackingNumber) === parcelId) {
           updatedTarget = {
             ...p,
             ...updates,
+            recordedByMemberId: updates.recordedByMemberId || p.recordedByMemberId || actor.memberId,
+            recordedByName: updates.recordedByName || p.recordedByName || actor.name,
+            recordedByRole: updates.recordedByRole || p.recordedByRole || actor.role,
             updatedAt: isoNow,
           };
           return updatedTarget;
@@ -1353,6 +1621,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             action: 'upsert',
             data: updatedTarget,
             queuedAt: isoNow,
+            queuedByMemberId: actor.memberId,
+            queuedByName: actor.name,
+            queuedByRole: actor.role,
           },
         ],
         { parcels: nextParcels }
@@ -1360,7 +1631,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
       showToast(`บันทึกการแก้ไขข้อมูลพัสดุ ${parcelId} ลงไฟล์สำรองระบบสำเร็จ`, 'success');
     },
-    [stagePendingWrites, showToast]
+    [getCurrentActorAttribution, stagePendingWrites, showToast]
   );
 
   /**
@@ -1379,6 +1650,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           ? (deliveredDate || getRelativeDateString(0)).slice(0, 20)
           : '';
       const isoNow = new Date().toISOString();
+      const actor = getCurrentActorAttribution();
       const stagedItems: PendingWriteItem[] = [];
 
       const nextParcels = parcelsRef.current.map((p) => {
@@ -1388,6 +1660,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             ...p,
             status: newStatus,
             deliveredDate: effectiveDeliveredDate,
+            recordedByMemberId: p.recordedByMemberId || actor.memberId,
+            recordedByName: p.recordedByName || actor.name,
+            recordedByRole: p.recordedByRole || actor.role,
             updatedAt: isoNow,
           };
           stagedItems.push({
@@ -1397,6 +1672,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             action: 'upsert',
             data: updated,
             queuedAt: isoNow,
+            queuedByMemberId: actor.memberId,
+            queuedByName: actor.name,
+            queuedByRole: actor.role,
           });
           return updated;
         }
@@ -1410,7 +1688,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         'success'
       );
     },
-    [stagePendingWrites, showToast]
+    [getCurrentActorAttribution, stagePendingWrites, showToast]
   );
 
   /**
@@ -1422,6 +1700,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         (p) => (p.id || p.trackingNumber) !== parcelId
       );
       setParcels(nextParcels);
+      const actor = getCurrentActorAttribution();
 
       await stagePendingWrites(
         [
@@ -1431,14 +1710,18 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             docId: parcelId,
             action: 'delete',
             queuedAt: new Date().toISOString(),
+            queuedByMemberId: actor.memberId,
+            queuedByName: actor.name,
+            queuedByRole: actor.role,
           },
         ],
-        { parcels: nextParcels }
+        { parcels: nextParcels },
+        { replaceCacheParcels: true }
       );
 
       showToast(`ลบรายการพัสดุ ${parcelId} ออกจากแคชและพักคำสั่งลบลงไฟล์สำรองแล้ว`, 'info');
     },
-    [stagePendingWrites, showToast]
+    [getCurrentActorAttribution, stagePendingWrites, showToast]
   );
 
   /**
@@ -1454,22 +1737,26 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       setParcels(nextParcels);
 
       const isoNow = new Date().toISOString();
+      const actor = getCurrentActorAttribution();
       const stagedItems: PendingWriteItem[] = parcelIds.map((pid) => ({
         id: `parcels:${pid}:${Date.now()}`,
         collection: 'parcels',
         docId: pid,
         action: 'delete',
         queuedAt: isoNow,
+        queuedByMemberId: actor.memberId,
+        queuedByName: actor.name,
+        queuedByRole: actor.role,
       }));
 
-      await stagePendingWrites(stagedItems, { parcels: nextParcels });
+      await stagePendingWrites(stagedItems, { parcels: nextParcels }, { replaceCacheParcels: true });
       showToast(
         `ลบข้อมูลพัสดุ${reasonLabel ? ` (${reasonLabel})` : ''} จำนวน ${parcelIds.length} ชิ้น ลงไฟล์สำรองระบบแล้ว (รออัปโหลด 00.00 น.)`,
         'info'
       );
       return parcelIds.length;
     },
-    [stagePendingWrites, showToast]
+    [getCurrentActorAttribution, stagePendingWrites, showToast]
   );
 
   /**
@@ -1521,6 +1808,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     ): Promise<number> => {
       if (rawParcels.length === 0) return 0;
       const isoNow = new Date().toISOString();
+      const actor = getCurrentActorAttribution();
       const mergedMap = new Map<string, Parcel>();
       for (const p of parcelsRef.current) {
         mergedMap.set(p.id || p.trackingNumber, p);
@@ -1530,12 +1818,16 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       for (const raw of rawParcels) {
         const id = (raw.trackingNumber || raw.id || '').trim();
         if (!id) continue;
+        const rawWithAttr = raw as Parcel;
         const parcelObj: Parcel = {
-          ...(raw as Parcel),
+          ...rawWithAttr,
           id,
           trackingNumber: id,
           ownerId: AUTO_CLOUD_OWNER_ID,
-          createdAt: (raw as Parcel).createdAt || isoNow,
+          recordedByMemberId: rawWithAttr.recordedByMemberId || actor.memberId,
+          recordedByName: rawWithAttr.recordedByName || actor.name,
+          recordedByRole: rawWithAttr.recordedByRole || actor.role,
+          createdAt: rawWithAttr.createdAt || isoNow,
           updatedAt: isoNow,
         };
         mergedMap.set(id, parcelObj);
@@ -1546,6 +1838,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           action: 'upsert',
           data: parcelObj,
           queuedAt: isoNow,
+          queuedByMemberId: actor.memberId,
+          queuedByName: actor.name,
+          queuedByRole: actor.role,
         });
       }
 
@@ -1560,7 +1855,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       );
       return stagedItems.length;
     },
-    [stagePendingWrites, showToast]
+    [getCurrentActorAttribution, stagePendingWrites, showToast]
   );
 
   /**
@@ -1630,6 +1925,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
       if (backupData.parcels && backupData.parcels.length > 0) {
         const pMap = new Map<string, Parcel>();
+        const actor = getCurrentActorAttribution();
         for (const p of nextParcels) pMap.set(p.id || p.trackingNumber, p);
         for (const p of backupData.parcels) {
           const pid = (p.trackingNumber || p.id || '').trim();
@@ -1639,6 +1935,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             id: pid,
             trackingNumber: pid,
             ownerId: AUTO_CLOUD_OWNER_ID,
+            recordedByMemberId: p.recordedByMemberId || actor.memberId,
+            recordedByName: p.recordedByName || actor.name,
+            recordedByRole: p.recordedByRole || actor.role,
             createdAt: p.createdAt || isoNow,
             updatedAt: isoNow,
           };
@@ -1650,6 +1949,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             action: 'upsert',
             data: parcelObj,
             queuedAt: isoNow,
+            queuedByMemberId: actor.memberId,
+            queuedByName: actor.name,
+            queuedByRole: actor.role,
           });
           parcelsCount++;
         }
@@ -1660,10 +1962,14 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
       setStudents(nextStudents);
       setParcels(nextParcels);
-      await stagePendingWrites(stagedItems, {
-        students: nextStudents,
-        parcels: nextParcels,
-      });
+      await stagePendingWrites(
+        stagedItems,
+        {
+          students: nextStudents,
+          parcels: nextParcels,
+        },
+        { replaceCacheParcels: replaceAll }
+      );
 
       showToast(
         `กู้คืนข้อมูลลงไฟล์สำรองระบบสำเร็จ: นักเรียน ${studentsCount} คน, พัสดุ ${parcelsCount} รายการ (รออัปโหลดขึ้น Firebase 00.00 น.)`,
@@ -1672,7 +1978,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
       return { studentsCount, parcelsCount };
     },
-    [stagePendingWrites, showToast]
+    [getCurrentActorAttribution, stagePendingWrites, showToast]
   );
 
   /**
@@ -2240,10 +2546,196 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     showToast('ออกจากระบบเรียบร้อยแล้ว', 'info');
   }, [showToast]);
 
+  // สรุปยอดรับเข้าพัสดุทั้งหมดรวมทุก User ในฐานข้อมูลสำรอง และรายการพร้อมอัปโหลดขึ้น Firebase
+  const parcelBackupSummary = useMemo<ParcelBackupSummary>(() => {
+    const todayYMD = getRelativeDateString(0);
+    const memberById = new Map<string, Member>();
+    for (const m of members) {
+      memberById.set(m.memberId, m);
+    }
+
+    const pendingParcelMap = new Map<string, PendingWriteItem>();
+    for (const item of pendingWrites) {
+      if (item.collection === 'parcels') {
+        pendingParcelMap.set(item.docId, item);
+      }
+    }
+
+    const userStatsMap = new Map<string, UserParcelBackupStat>();
+    const ensureUserStat = (
+      userKey: string,
+      userName: string,
+      userRole: string
+    ): UserParcelBackupStat => {
+      let existing = userStatsMap.get(userKey);
+      if (!existing) {
+        const matchedMember = memberById.get(userKey);
+        existing = {
+          userKey,
+          userName: matchedMember?.fullName || userName || 'ระบบสำรองกลาง',
+          userRole: matchedMember?.role || userRole || 'ระบบ',
+          totalParcels: 0,
+          todayParcels: 0,
+          pendingUploadCount: 0,
+          lastRecordedAt: null,
+        };
+        userStatsMap.set(userKey, existing);
+      }
+      return existing;
+    };
+
+    let todayParcelsInBackup = 0;
+    let unstagedBackupParcelsCount = 0;
+
+    for (const p of parcels) {
+      const key = p.id || p.trackingNumber;
+      const pYmd = p.receivedDate || extractParcelLocalYMD(p);
+      const isToday = pYmd === todayYMD;
+      if (isToday) todayParcelsInBackup++;
+
+      const pendingItem = pendingParcelMap.get(key);
+      if (!pendingItem) {
+        unstagedBackupParcelsCount++;
+      }
+
+      const userKey =
+        p.recordedByMemberId ||
+        pendingItem?.queuedByMemberId ||
+        'shared_system';
+      const userName =
+        p.recordedByName ||
+        pendingItem?.queuedByName ||
+        'ข้อมูลซิงค์กลาง / ไม่ระบุผู้บันทึก';
+      const userRole =
+        p.recordedByRole ||
+        pendingItem?.queuedByRole ||
+        'ระบบสำรองกลาง';
+
+      const stat = ensureUserStat(userKey, userName, userRole);
+      stat.totalParcels++;
+      if (isToday) stat.todayParcels++;
+      if (pendingItem) stat.pendingUploadCount++;
+
+      const ts = p.updatedAt || p.createdAt;
+      if (ts && (!stat.lastRecordedAt || ts > stat.lastRecordedAt)) {
+        stat.lastRecordedAt = ts;
+      }
+    }
+
+    // รวมรายการพัสดุในคิว pendingWrites ที่ยังไม่อยู่ใน parcels array (เช่น คำสั่งลบ)
+    const existingParcelIds = new Set(parcels.map((p) => p.id || p.trackingNumber));
+    for (const item of pendingWrites) {
+      if (item.collection === 'parcels' && !existingParcelIds.has(item.docId)) {
+        const userKey = item.queuedByMemberId || 'shared_system';
+        const userName = item.queuedByName || 'ข้อมูลซิงค์กลาง / ไม่ระบุผู้บันทึก';
+        const userRole = item.queuedByRole || 'ระบบสำรองกลาง';
+        const stat = ensureUserStat(userKey, userName, userRole);
+        stat.pendingUploadCount++;
+        if (item.queuedAt && (!stat.lastRecordedAt || item.queuedAt > stat.lastRecordedAt)) {
+          stat.lastRecordedAt = item.queuedAt;
+        }
+      }
+    }
+
+    const byUser = Array.from(userStatsMap.values()).sort(
+      (a, b) =>
+        b.totalParcels - a.totalParcels ||
+        b.todayParcels - a.todayParcels ||
+        b.pendingUploadCount - a.pendingUploadCount ||
+        a.userName.localeCompare(b.userName, 'th')
+    );
+
+    return {
+      totalParcelsInBackup: parcels.length,
+      todayParcelsInBackup,
+      pendingParcelsToUpload: pendingParcelMap.size,
+      totalPendingItemsToUpload: pendingWrites.length,
+      unstagedBackupParcelsCount,
+      byUser,
+      serverFileActive: parcelBackupStatus.serverFileActive || localBackupStatus.serverFileActive,
+      indexedDbActive: parcelBackupStatus.indexedDbActive,
+      backupFilePath: parcelBackupStatus.filePath || 'data/parcels-backup.json',
+      updatedAt: parcelBackupStatus.updatedAt,
+    };
+  }, [parcels, pendingWrites, members, parcelBackupStatus, localBackupStatus.serverFileActive]);
+
+  // เตรียมพัสดุทั้งหมดในฐานข้อมูลสำรอง (ทุก User) ลงคิวพร้อมอัปโหลดขึ้น Firebase
+  const stageAllBackupParcelsForUpload = useCallback(async (): Promise<number> => {
+    const allParcels = parcelsRef.current;
+    if (allParcels.length === 0) {
+      showToast('ยังไม่มีข้อมูลพัสดุในฐานข้อมูลสำรอง', 'info');
+      return 0;
+    }
+
+    const pendingParcelKeys = new Set(
+      pendingWritesRef.current
+        .filter((item) => item.collection === 'parcels')
+        .map((item) => item.docId)
+    );
+
+    const isoNow = new Date().toISOString();
+    const actor = getCurrentActorAttribution();
+    const newItems: PendingWriteItem[] = [];
+
+    for (const p of allParcels) {
+      const key = (p.id || p.trackingNumber || '').trim();
+      if (!key || pendingParcelKeys.has(key)) continue;
+      newItems.push({
+        id: `parcels:${key}:${Date.now()}`,
+        collection: 'parcels',
+        docId: key,
+        action: 'upsert',
+        data: p,
+        queuedAt: isoNow,
+        queuedByMemberId: p.recordedByMemberId || actor.memberId,
+        queuedByName: p.recordedByName || actor.name,
+        queuedByRole: p.recordedByRole || actor.role,
+      });
+    }
+
+    await saveAllParcelsToBackupDb(allParcels, 'manual_stage_all_backup');
+
+    if (newItems.length === 0) {
+      showToast(
+        `พัสดุทั้งหมด ${allParcels.length} ชิ้น อยู่ในคิวพร้อมอัปโหลดขึ้น Firebase เรียบร้อยแล้ว`,
+        'info'
+      );
+      return 0;
+    }
+
+    await stagePendingWrites(newItems, { parcels: allParcels });
+    showToast(
+      `เตรียมพัสดุจากฐานข้อมูลสำรองเพิ่มอีก ${newItems.length} ชิ้น (รวมทั้งหมด ${pendingWritesRef.current.length} รายการพร้อมอัปโหลดขึ้น Firebase)`,
+      'success'
+    );
+    return newItems.length;
+  }, [getCurrentActorAttribution, stagePendingWrites, showToast]);
+
   // ฟังก์ชันอัปโหลดข้อมูลจากไฟล์สำรองขึ้น Firebase (และลบไฟล์สำรองเมื่อสำเร็จ)
   const uploadStagedToFirebaseNow = useCallback(async (): Promise<void> => {
     await uploadStagedToFirebase({ isAutoMidnight: false });
   }, [uploadStagedToFirebase]);
+
+  // เตรียมพัสดุทั้งหมดในฐานข้อมูลสำรอง (ทุก User) และอัปโหลดขึ้น Firebase ทันที
+  const uploadAllBackupParcelsToFirebaseNow = useCallback(async (): Promise<void> => {
+    if (parcelsRef.current.length === 0 && pendingWritesRef.current.length === 0) {
+      showToast('ยังไม่มีข้อมูลพัสดุในฐานข้อมูลสำรองสำหรับอัปโหลด', 'info');
+      return;
+    }
+
+    const pendingParcelKeys = new Set(
+      pendingWritesRef.current
+        .filter((item) => item.collection === 'parcels')
+        .map((item) => item.docId)
+    );
+    const hasUnstaged = parcelsRef.current.some(
+      (p) => !pendingParcelKeys.has((p.id || p.trackingNumber || '').trim())
+    );
+    if (hasUnstaged) {
+      await stageAllBackupParcelsForUpload();
+    }
+    await uploadStagedToFirebase({ isAutoMidnight: false });
+  }, [stageAllBackupParcelsForUpload, uploadStagedToFirebase, showToast]);
 
   const syncPendingToFirebase = useCallback(async (): Promise<void> => {
     if (pendingWritesRef.current.length > 0) {
@@ -2336,6 +2828,8 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       pendingWrites,
       localBackupStatus,
       studentBackupStatus,
+      parcelBackupStatus,
+      parcelBackupSummary,
       firestoreConnectionStatus,
       quotaMetrics,
       syncMode,
@@ -2368,6 +2862,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       clearAllStudents,
       backupAllStudentsNow,
       restoreStudentsFromBackupDb,
+      stageAllBackupParcelsForUpload,
+      uploadAllBackupParcelsToFirebaseNow,
+      refreshFromLocalBackupServer,
       syncPendingToFirebase,
       uploadStagedToFirebaseNow,
       pullFromFirebaseToLocal,
@@ -2408,6 +2905,8 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       pendingWrites,
       localBackupStatus,
       studentBackupStatus,
+      parcelBackupStatus,
+      parcelBackupSummary,
       firestoreConnectionStatus,
       quotaMetrics,
       syncMode,
@@ -2440,6 +2939,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       clearAllStudents,
       backupAllStudentsNow,
       restoreStudentsFromBackupDb,
+      stageAllBackupParcelsForUpload,
+      uploadAllBackupParcelsToFirebaseNow,
+      refreshFromLocalBackupServer,
       syncPendingToFirebase,
       uploadStagedToFirebaseNow,
       pullFromFirebaseToLocal,
