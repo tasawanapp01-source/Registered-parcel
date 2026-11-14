@@ -23,9 +23,8 @@ on:
       - master
   workflow_dispatch:
 
-# กำหนดสิทธิ์ให้ครบทั้ง contents: write (สำหรับสร้างกิ่ง gh-pages อัตโนมัติ) และ pages: write
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -34,7 +33,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: 1. Checkout Source Code
@@ -65,8 +64,7 @@ jobs:
           fi
 
       - name: 4. Install Dependencies
-        run: |
-          npm install --legacy-peer-deps || npm install --force
+        run: npm install --legacy-peer-deps || npm install --force
 
       - name: 5. Build Production Bundle (Vite + React + Tailwind)
         run: |
@@ -74,33 +72,26 @@ jobs:
           touch dist/.nojekyll
           cp dist/index.html dist/404.html
 
-      - name: 6. Deploy to gh-pages Branch (รองรับโหมด Deploy from a branch)
-        uses: peaceiris/actions-gh-pages@v4
-        continue-on-error: true
-        with:
-          github_token: \${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist
-          force_orphan: true
-
-      - name: 7. Configure GitHub Pages
-        id: pages_config
+      - name: 6. Configure GitHub Pages
         uses: actions/configure-pages@v5
-        continue-on-error: true
         with:
           enablement: true
 
-      - name: 8. Upload Build Artifact (dist/)
-        if: steps.pages_config.outcome == 'success'
+      - name: 7. Upload Build Artifact (dist/)
         uses: actions/upload-pages-artifact@v3
-        continue-on-error: true
         with:
           path: './dist'
 
-      - name: 9. Deploy to GitHub Pages (รองรับโหมด GitHub Actions)
-        if: steps.pages_config.outcome == 'success'
+  deploy:
+    environment:
+      name: github-pages
+      url: \${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
-        continue-on-error: true`;
+        uses: actions/deploy-pages@v4`;
 
 const VITE_CONFIG_CODE = `import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
@@ -151,7 +142,7 @@ echo       - master
 echo   workflow_dispatch:
 echo.
 echo permissions:
-echo   contents: write
+echo   contents: read
 echo   pages: write
 echo   id-token: write
 echo.
@@ -160,7 +151,7 @@ echo   group: "pages"
 echo   cancel-in-progress: true
 echo.
 echo jobs:
-echo   build-and-deploy:
+echo   build:
 echo     runs-on: ubuntu-latest
 echo     steps:
 echo       - name: 1. Checkout Source Code
@@ -180,33 +171,26 @@ echo           npm run build
 echo           touch dist/.nojekyll
 echo           cp dist/index.html dist/404.html
 echo.
-echo       - name: 5. Deploy to gh-pages Branch
-echo         uses: peaceiris/actions-gh-pages@v4
-echo         continue-on-error: true
-echo         with:
-echo           github_token: \${{ secrets.GITHUB_TOKEN }}
-echo           publish_dir: ./dist
-echo           force_orphan: true
-echo.
-echo       - name: 6. Configure GitHub Pages
-echo         id: pages_config
+echo       - name: 5. Configure GitHub Pages
 echo         uses: actions/configure-pages@v5
-echo         continue-on-error: true
 echo         with:
 echo           enablement: true
 echo.
-echo       - name: 7. Upload Build Artifact ^(dist/^)
-echo         if: steps.pages_config.outcome == 'success'
+echo       - name: 6. Upload Build Artifact ^(dist/^)
 echo         uses: actions/upload-pages-artifact@v3
-echo         continue-on-error: true
 echo         with:
 echo           path: './dist'
 echo.
-echo       - name: 8. Deploy to GitHub Pages
-echo         if: steps.pages_config.outcome == 'success'
+echo   deploy:
+echo     environment:
+echo       name: github-pages
+echo       url: \${{ steps.deployment.outputs.page_url }}
+echo     runs-on: ubuntu-latest
+echo     needs: build
+echo     steps:
+echo       - name: Deploy to GitHub Pages
 echo         id: deployment
 echo         uses: actions/deploy-pages@v4
-echo         continue-on-error: true
 ) > ".github\\workflows\\deploy.yml"
 
 echo [สำเร็จ] สร้างไฟล์ .github\\workflows\\deploy.yml และ public\\.nojekyll เรียบร้อยแล้ว!

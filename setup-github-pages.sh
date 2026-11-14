@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: 1. Checkout Source Code
@@ -64,33 +64,26 @@ jobs:
           touch dist/.nojekyll
           cp dist/index.html dist/404.html
 
-      - name: 6. Deploy to gh-pages Branch
-        uses: peaceiris/actions-gh-pages@v4
-        continue-on-error: true
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist
-          force_orphan: true
-
-      - name: 7. Configure GitHub Pages
-        id: pages_config
+      - name: 6. Configure GitHub Pages
         uses: actions/configure-pages@v5
-        continue-on-error: true
         with:
           enablement: true
 
-      - name: 8. Upload Build Artifact (dist/)
-        if: steps.pages_config.outcome == 'success'
+      - name: 7. Upload Build Artifact (dist/)
         uses: actions/upload-pages-artifact@v3
-        continue-on-error: true
         with:
           path: './dist'
 
-      - name: 9. Deploy to GitHub Pages
-        if: steps.pages_config.outcome == 'success'
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-        continue-on-error: true
 EOF
 
 echo "[สำเร็จ] อัปเดตไฟล์ .github/workflows/deploy.yml เรียบร้อยแล้ว!"
