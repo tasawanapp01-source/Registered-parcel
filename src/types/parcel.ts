@@ -223,11 +223,33 @@ export interface RolePermission {
 
 export interface PendingWriteItem {
   id: string;
-  collection: 'students' | 'parcels' | 'members' | 'role_permissions';
+  collection: 'students' | 'parcels' | 'members' | 'role_permissions' | 'system_settings';
   docId: string;
   action: 'upsert' | 'delete';
-  data?: Student | Parcel | Member | RolePermission;
+  data?: Student | Parcel | Member | RolePermission | ParcelRateLimitConfig;
   queuedAt: string;
+}
+
+export interface LocalBackupStatus {
+  serverFileActive: boolean;
+  stagingFileExists: boolean;
+  stagingFilePath: string;
+  cacheFilePath: string;
+  stagedCount: number;
+  lastAutoUploadDate: string | null;
+  lastUploadedAt: string | null;
+  nextScheduledUploadAt: string;
+}
+
+export type FirestoreConnectionStatus = 'connected' | 'offline_fallback' | 'quota_exceeded';
+
+export interface StudentBackupStatus {
+  count: number;
+  updatedAt: string | null;
+  filePath: string;
+  serverFileActive: boolean;
+  indexedDbActive: boolean;
+  source: string | null;
 }
 
 export interface QuotaMetrics {

@@ -18,6 +18,12 @@ import {
   CheckSquare,
   AlertTriangle,
   Pencil,
+  Database,
+  HardDrive,
+  RefreshCw,
+  WifiOff,
+  FileCode,
+  UploadCloud,
 } from 'lucide-react';
 import { useParcelSystem } from '../context/ParcelSystemContext';
 import {
@@ -182,6 +188,10 @@ export const StudentsImportView: React.FC = () => {
     syncProgress,
     canCurrentMemberEdit,
     canCurrentMemberDelete,
+    studentBackupStatus,
+    firestoreConnectionStatus,
+    backupAllStudentsNow,
+    restoreStudentsFromBackupDb,
   } = useParcelSystem();
 
   const [pastedText, setPastedText] = useState<string>('');
@@ -514,9 +524,66 @@ export const StudentsImportView: React.FC = () => {
         }
       };
       reader.readAsArrayBuffer(file);
+    } else if (ext === 'json') {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const text = evt.target?.result as string;
+          const parsed = JSON.parse(text);
+          const list = Array.isArray(parsed)
+            ? parsed
+            : Array.isArray(parsed?.students)
+            ? parsed.students
+            : null;
+          if (!list || list.length === 0) {
+            setParseError('ไม่พบรายการข้อมูลนักเรียนในไฟล์ JSON');
+            return;
+          }
+          const mapped: RawStudentRow[] = list
+            .map((r: Record<string, unknown>, i: number) => mapRowToStudent(r, i))
+            .filter((r: RawStudentRow) => r.studentCode !== '');
+          if (mapped.length === 0) {
+            setParseError('ไม่พบรหัสนักเรียนที่ถูกต้องในไฟล์ JSON');
+            return;
+          }
+          setPreviewRows(mapped);
+        } catch (err) {
+          setParseError(
+            `ไม่สามารถอ่านไฟล์ JSON ได้: ${err instanceof Error ? err.message : 'รูปแบบไม่ถูกต้อง'}`
+          );
+        }
+      };
+      reader.readAsText(file, 'utf-8');
     } else {
-      setParseError('กรุณาอัปโหลดไฟล์นามสกุล .csv, .xlsx หรือ .xls เท่านั้น');
+      setParseError('กรุณาอัปโหลดไฟล์นามสกุล .csv, .xlsx, .xls หรือ .json เท่านั้น');
     }
+  };
+
+  // ดาวน์โหลดรายชื่อนักเรียนทั้งหมดเป็นไฟล์ JSON สำรอง
+  const handleExportStudentsBackupJson = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const payload = {
+      meta: {
+        exportedAt: now.toISOString(),
+        count: students.length,
+        source: 'students-backup',
+      },
+      students,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json;charset=utf-8;',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `students_backup_${y}${m}${d}.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // ดาวน์โหลดไฟล์โครงสร้างหัวตาราง CSV เปล่า
@@ -700,7 +767,7 @@ export const StudentsImportView: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
           <p className="text-xs font-medium text-slate-500">
-            รองรับการดูรายชื่อแยกตามห้องเรียน · แยกตามหอพัก · เลือกล้างข้อมูลเฉพาะส่วนได้ · บันทึก แก้ไข และลบกับฐานข้อมูล Firestore โดยตรง
+            รองรับการดูรายชื่อแยกตามห้องเรียน · แยกตามหอพัก · เก็บสำรองในฐานข้อมูลสำรอง (IndexedDB + ไฟล์เซิร์ฟเวอร์) ใช้ได้แม้เชื่อมต่อ Firestore ไม่ได้ · ซิงก์ขึ้น Firebase อัตโนมัติ 00:00 น.
           </p>
           <h1 className="text-2xl md:text-3xl font-bold text-slate-900 mt-1">
             ระบบจัดการและนำเข้าข้อมูลนักเรียน (Student Data Management)
@@ -744,13 +811,112 @@ export const StudentsImportView: React.FC = () => {
         </div>
       </div>
 
-      {/* วิธีที่ 1: เพิ่มรายชื่อนักเรียนแบบรายบุคคล (กรอกบนหน้าเว็บได้ทันที + ซิงก์ Firebase อัตโนมัติ) */}
+      {/* ฐานข้อมูลสำรองรายชื่อนักเรียน (ใช้เมื่อเชื่อมต่อ Firestore ไม่ได้) */}
+      <section className="bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950 text-white rounded-2xl p-5 md:p-6 shadow-sm border border-slate-800 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/20 border border-indigo-400/30 text-indigo-200 text-[11px] font-bold">
+                <Database className="w-3.5 h-3.5" />
+                <span>ฐานข้อมูลสำรองรายชื่อนักเรียน (Offline Student Backup Database)</span>
+              </span>
+              {firestoreConnectionStatus === 'connected' ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 text-[11px] font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span>Firestore พร้อมเชื่อมต่อ</span>
+                </span>
+              ) : firestoreConnectionStatus === 'quota_exceeded' ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-400/30 text-amber-200 text-[11px] font-semibold">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>โควตา Firestore เต็ม · ใช้ฐานข้อมูลสำรอง</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-500/20 border border-rose-400/30 text-rose-200 text-[11px] font-semibold">
+                  <WifiOff className="w-3.5 h-3.5" />
+                  <span>เชื่อมต่อ Firestore ไม่ได้ · กำลังใช้ฐานข้อมูลสำรอง</span>
+                </span>
+              )}
+            </div>
+            <h2 className="text-base md:text-lg font-bold text-white">
+              สำรองรายชื่อนักเรียนทั้งหมดไว้ในเครื่องและเซิร์ฟเวอร์ (ไม่ถูกลบหลังซิงก์ 00:00 น.)
+            </h2>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              ระบบจัดเก็บรายชื่อนักเรียนทั้งหมดไว้ใน <strong className="text-white">IndexedDB</strong> และไฟล์{' '}
+              <code className="px-1.5 py-0.5 bg-white/10 rounded font-mono text-[11px] text-indigo-200">
+                {studentBackupStatus.filePath}
+              </code>{' '}
+              โดยอัตโนมัติ เพื่อให้ค้นหารายชื่อนักเรียนและรับพัสดุได้ต่อเนื่องแม้เชื่อมต่อ Firestore ไม่ได้
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => void backupAllStudentsNow()}
+              disabled={students.length === 0}
+              className="min-h-[40px] px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <HardDrive className="w-4 h-4" />
+              <span>บันทึกรายชื่อทั้งหมดลงฐานข้อมูลสำรองทันที ({students.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void restoreStudentsFromBackupDb()}
+              disabled={studentBackupStatus.count === 0}
+              className="min-h-[40px] px-3.5 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white border border-white/20 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>กู้คืนจากฐานข้อมูลสำรอง ({studentBackupStatus.count})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportStudentsBackupJson}
+              disabled={students.length === 0}
+              className="min-h-[40px] px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <FileCode className="w-4 h-4" />
+              <span>ส่งออกไฟล์สำรอง (.json)</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-white/10 text-xs">
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+            <span className="text-[11px] text-slate-400 block">จำนวนรายชื่อในฐานข้อมูลสำรอง</span>
+            <strong className="font-mono text-base text-white tabular-nums">
+              {studentBackupStatus.count.toLocaleString()} คน
+            </strong>
+          </div>
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+            <span className="text-[11px] text-slate-400 block">ที่จัดเก็บสำรองถาวร</span>
+            <strong className="font-mono text-emerald-300 text-xs">
+              {studentBackupStatus.indexedDbActive ? 'IndexedDB พร้อมใช้' : 'LocalStorage'} ·{' '}
+              {studentBackupStatus.serverFileActive ? 'ไฟล์เซิร์ฟเวอร์พร้อมใช้' : 'รอสร้างไฟล์เซิร์ฟเวอร์'}
+            </strong>
+          </div>
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+            <span className="text-[11px] text-slate-400 block">บันทึกลงฐานข้อมูลสำรองล่าสุด</span>
+            <strong className="font-mono text-indigo-200 text-xs">
+              {studentBackupStatus.updatedAt
+                ? `${new Date(studentBackupStatus.updatedAt).toLocaleString('th-TH', {
+                    dateStyle: 'short',
+                    timeStyle: 'short',
+                  })} น.`
+                : 'ยังไม่มีข้อมูลสำรอง'}
+            </strong>
+          </div>
+        </div>
+      </section>
+
+      {/* วิธีที่ 1: เพิ่มรายชื่อนักเรียนแบบรายบุคคล (บันทึกลงฐานข้อมูลสำรอง + รอซิงก์ Firebase 00:00 น.) */}
       <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
           <div>
             <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
               <Plus className="w-5 h-5 text-emerald-700" />
-              <span>1. เพิ่มรายชื่อนักเรียนแบบรายบุคคล (กรอกข้อมูลและบันทึกขึ้น Firebase ทันที)</span>
+              <span>1. เพิ่มรายชื่อนักเรียนแบบรายบุคคล (บันทึกลงฐานข้อมูลสำรองทันที)</span>
             </h2>
             <p className="text-xs text-slate-600 mt-0.5">
               กรอกข้อมูลนักเรียนรายคนด้านล่าง แล้วกดปุ่ม <strong className="text-slate-900">"+ บันทึกเพิ่มรายชื่อนักเรียน"</strong> ระบบจะคงค่าระดับชั้น ห้อง และหอพักไว้ให้เพื่อกรอกคนถัดไปได้อย่างรวดเร็ว
@@ -946,7 +1112,7 @@ export const StudentsImportView: React.FC = () => {
               className="min-h-[44px] px-5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-2 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              <span>บันทึกเพิ่มรายชื่อนักเรียน (ซิงก์ Firebase ทันที)</span>
+              <span>บันทึกเพิ่มรายชื่อนักเรียน (เก็บลงฐานข้อมูลสำรองทันที)</span>
             </button>
           </div>
         </form>
@@ -998,20 +1164,20 @@ export const StudentsImportView: React.FC = () => {
           />
         </div>
 
-        {/* วิธีที่ 2: หรือเลือกอัปโหลดเป็นไฟล์ CSV / Excel */}
+        {/* วิธีที่ 2: หรือเลือกอัปโหลดเป็นไฟล์ CSV / Excel / JSON */}
         <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-xs text-slate-600">
             <FileSpreadsheet className="w-4 h-4 text-emerald-700 shrink-0" />
-            <span>หรืออัปโหลดเป็นไฟล์เอกสารจากคอมพิวเตอร์ (.CSV, .XLSX, .XLS):</span>
+            <span>หรืออัปโหลดเป็นไฟล์เอกสารจากคอมพิวเตอร์ (.CSV, .XLSX, .XLS, .JSON):</span>
           </div>
 
           <label className="min-h-[42px] px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-900 text-xs font-bold rounded-xl transition-colors flex items-center gap-2 cursor-pointer self-start sm:self-auto shrink-0">
             <Upload className="w-4 h-4" />
-            <span>เลือกไฟล์ CSV / Excel</span>
+            <span>เลือกไฟล์ CSV / Excel / JSON</span>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv,.xlsx,.xls"
+              accept=".csv,.xlsx,.xls,.json"
               onChange={handleFileUpload}
               className="sr-only"
             />
@@ -1055,7 +1221,7 @@ export const StudentsImportView: React.FC = () => {
                   ตรวจสอบข้อมูลก่อนนำเข้า: {sourceLabel} (พร้อมนำเข้า {previewRows.length} รายการ)
                 </h3>
                 <p className="text-xs text-slate-600 mt-0.5">
-                  กดปุ่มยืนยันด้านขวาเพื่อบันทึกข้อมูลลงฐานข้อมูล Firebase Firestore โดยตรง
+                  เลือกว่าจะบันทึกลงฐานข้อมูลสำรองพร้อมเตรียมซิงก์ Firebase เวลา 00:00 น. หรือเก็บไว้ในฐานข้อมูลสำรองอย่างเดียว (กรณีไม่เชื่อมต่อ Firestore)
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -1064,8 +1230,16 @@ export const StudentsImportView: React.FC = () => {
                   onClick={() => handleConfirmBulkImport(true)}
                   className="min-h-[44px] px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>บันทึกลงฐานข้อมูล Firestore ทันที ({previewRows.length} คน)</span>
+                  <UploadCloud className="w-4 h-4" />
+                  <span>บันทึกลงฐานข้อมูลสำรอง + รออัปโหลด 00.00 น. ({previewRows.length} คน)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleConfirmBulkImport(false)}
+                  className="min-h-[44px] px-4 py-2 bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Database className="w-4 h-4" />
+                  <span>บันทึกลงฐานข้อมูลสำรองอย่างเดียว (ไม่ต่อ Firestore)</span>
                 </button>
                 <button
                   type="button"

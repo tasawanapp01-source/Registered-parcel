@@ -10,9 +10,10 @@ import {
   Boxes,
 } from 'lucide-react';
 import { useParcelSystem } from '../context/ParcelSystemContext';
+import { FIRESTORE_UPGRADE_URL, FIRESTORE_PRICING_URL } from '../services/firebase';
 
 export const LoginView: React.FC = () => {
-  const { loginWithCredentials } = useParcelSystem();
+  const { loginWithCredentials, quotaExceeded } = useParcelSystem();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -70,6 +71,38 @@ export const LoginView: React.FC = () => {
               <Lock className="w-4 h-4" />
             </div>
           </div>
+
+          {quotaExceeded && (
+            <div
+              role="status"
+              className="mb-5 p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-950 text-xs space-y-1.5 shadow-xs"
+            >
+              <div className="font-bold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+                <span>โควตาการอ่านข้อมูล Firestore รายวันเต็มแล้ว (Free Tier)</span>
+              </div>
+              <p className="text-[11px] text-amber-900 leading-relaxed">
+                โควตาจะรีเซ็ตอัตโนมัติในวันถัดไป (Spark Plan / Enterprise Edition){' '}
+                <a
+                  href={FIRESTORE_PRICING_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline font-semibold hover:text-amber-700"
+                >
+                  ดูรายละเอียดโควตา
+                </a>{' '}
+                หรือ{' '}
+                <a
+                  href={FIRESTORE_UPGRADE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline font-semibold hover:text-amber-700"
+                >
+                  อัปเกรดฐานข้อมูลใน Firebase Console
+                </a>
+              </p>
+            </div>
+          )}
 
           {errorMsg && (
             <div

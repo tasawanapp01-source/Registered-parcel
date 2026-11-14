@@ -163,6 +163,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     students,
     parcels,
     lookupStudentByCode,
+    lookupStudentWithCloudFallback,
     recordLocalSearchSaving,
     addInboundParcel,
     updateParcelStatus,
@@ -426,8 +427,8 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     populateStudentFields(matchedStudent);
   }, [matchedStudent, recordLocalSearchSaving, populateStudentFields]);
 
-  // ฟังก์ชันค้นหาและดึงข้อมูลนักเรียนด้วยรหัสนักเรียน, ชื่อ, นามสกุล, ชื่อเล่น หรือหอพัก
-  const handleFetchStudentData = () => {
+  // ฟังก์ชันค้นหาและดึงข้อมูลนักเรียนด้วยรหัสนักเรียน, ชื่อ, นามสกุล, ชื่อเล่น หรือหอพัก (ค้นหาจากข้อมูลสำรองในระบบก่อน แล้วจึงค้นหาใน Firebase)
+  const handleFetchStudentData = async () => {
     setFormError(null);
     const query = studentSearchInput.trim();
 
@@ -505,12 +506,21 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         return;
       }
 
+      // ไม่พบในข้อมูลสำรองของระบบ -> ค้นหาแบบเจาะจงจาก Firebase (1 Read)
+      const cloudRes = await lookupStudentWithCloudFallback(query);
+      if (cloudRes.student) {
+        lastAutoPopulatedCodeRef.current = cloudRes.student.studentCode;
+        populateStudentFields(cloudRes.student);
+        setIsStudentSelected(true);
+        return;
+      }
+
       setStudentFetchFeedback({
         type: 'warning',
         message:
           students.length === 0
-            ? 'ยังไม่มีรายชื่อนักเรียนในแคชของเครื่อง คุณสามารถกด "แก้ไข / กรอกข้อมูลเอง" หรือนำเข้าข้อมูลนักเรียน'
-            : `ไม่พบข้อมูลนักเรียนจากรหัสหรือคำค้น "${query}" สามารถกด "แก้ไข / กรอกข้อมูลเอง" ด้านล่างได้`,
+            ? 'ไม่พบในข้อมูลสำรองและ Firebase คุณสามารถกด "แก้ไข / กรอกข้อมูลเอง" หรือนำเข้าข้อมูลนักเรียน'
+            : `ไม่พบข้อมูลนักเรียนจากรหัส "${query}" ทั้งในข้อมูลสำรองและ Firebase`,
       });
       return;
     }
@@ -540,7 +550,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       type: 'warning',
       message:
         students.length === 0
-          ? 'ยังไม่มีรายชื่อนักเรียนในแคชของเครื่อง คุณสามารถกด "แก้ไข / กรอกข้อมูลเอง" หรือนำเข้าข้อมูลนักเรียน'
+          ? 'ยังไม่มีรายชื่อนักเรียนในข้อมูลสำรอง คุณสามารถกด "แก้ไข / กรอกข้อมูลเอง" หรือนำเข้าข้อมูลนักเรียน'
           : `ไม่พบข้อมูลนักเรียนจากคำค้น "${query}" สามารถกด "แก้ไข / กรอกข้อมูลเอง" ด้านล่างได้`,
     });
   };

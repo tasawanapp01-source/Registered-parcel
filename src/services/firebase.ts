@@ -21,6 +21,7 @@ import {
   writeBatch,
   query,
   where,
+  limit,
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore';
@@ -34,6 +35,7 @@ import {
   RolePermission,
   AppMenuKey,
   ALL_MENU_KEYS,
+  PendingWriteItem,
   INITIAL_MEMBERS,
   INITIAL_ROLE_PERMISSIONS,
   INITIAL_STUDENTS,
@@ -82,6 +84,42 @@ export interface FirestoreErrorInfo {
       email?: string | null;
     }[];
   };
+}
+
+export const FIRESTORE_UPGRADE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/data?openUpgradeDialog=true`;
+export const FIRESTORE_PRICING_URL = 'https://firebase.google.com/pricing#cloud-firestore';
+
+export function isFirestoreQuotaError(error: unknown): boolean {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '').toLowerCase()
+      : '';
+  const msg = (error instanceof Error ? error.message : String(error || '')).toLowerCase();
+  return (
+    code === 'resource-exhausted' ||
+    msg.includes('quota limit exceeded') ||
+    msg.includes('quota exceeded') ||
+    msg.includes('free daily read units') ||
+    msg.includes('resource-exhausted')
+  );
+}
+
+export function isFirestoreConnectionError(error: unknown): boolean {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '').toLowerCase()
+      : '';
+  const msg = (error instanceof Error ? error.message : String(error || '')).toLowerCase();
+  return (
+    code === 'unavailable' ||
+    code === 'failed-precondition' ||
+    code === 'deadline-exceeded' ||
+    msg.includes('client is offline') ||
+    msg.includes('unavailable') ||
+    msg.includes('network') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('could not reach cloud firestore')
+  );
 }
 
 export function handleFirestoreError(
@@ -869,13 +907,14 @@ function mapDocToRolePermission(
 
 /**
  * ตรวจสอบและตั้งค่าข้อมูลสมาชิกและสิทธิ์เริ่มต้นบน Firestore หากฐานข้อมูลยังว่างเปล่า
+ * ใช้ limit(1) เพื่ออ่านเพียง 1 เอกสารต่อคอลเลกชัน ป้องกันการอ่านทั้งฐานข้อมูลโดยไม่จำเป็น
  */
 export async function initializeDefaultCloudDataIfEmpty(
   ownerId: string = AUTO_CLOUD_OWNER_ID
-): Promise<void> {
+): Promise<{ quotaExceeded?: boolean }> {
   try {
     // 1. ตรวจสอบ Role Permissions
-    const rpQuery = query(collection(db, 'role_permissions'), where('ownerId', '==', ownerId));
+    const rpQuery = query(collection(db, 'role_permissions'), where('ownerId', '==', ownerId), limit(1));
     const rpSnap = await getDocs(rpQuery);
     if (rpSnap.empty) {
       const batch = writeBatch(db);
@@ -888,7 +927,7 @@ export async function initializeDefaultCloudDataIfEmpty(
     }
 
     // 2. ตรวจสอบ Members
-    const mQuery = query(collection(db, 'members'), where('ownerId', '==', ownerId));
+    const mQuery = query(collection(db, 'members'), where('ownerId', '==', ownerId), limit(1));
     const mSnap = await getDocs(mQuery);
     if (mSnap.empty) {
       const batch = writeBatch(db);
@@ -901,14 +940,14 @@ export async function initializeDefaultCloudDataIfEmpty(
     }
 
     // 3. ตรวจสอบ Students
-    const stQuery = query(collection(db, 'students'), where('ownerId', '==', ownerId));
+    const stQuery = query(collection(db, 'students'), where('ownerId', '==', ownerId), limit(1));
     const stSnap = await getDocs(stQuery);
     if (stSnap.empty) {
       await batchImportStudentsToFirestore(INITIAL_STUDENTS, ownerId);
     }
 
     // 4. ตรวจสอบ Parcels
-    const pQuery = query(collection(db, 'parcels'), where('ownerId', '==', ownerId));
+    const pQuery = query(collection(db, 'parcels'), where('ownerId', '==', ownerId), limit(1));
     const pSnap = await getDocs(pQuery);
     if (pSnap.empty) {
       const batch = writeBatch(db);
@@ -919,8 +958,13 @@ export async function initializeDefaultCloudDataIfEmpty(
       }
       await batch.commit();
     }
+    return {};
   } catch (error) {
+    if (isFirestoreQuotaError(error)) {
+      return { quotaExceeded: true };
+    }
     console.warn('Initial cloud seed note:', error);
+    return {};
   }
 }
 
@@ -937,8 +981,14 @@ export async function fetchCloudDataDirectly(
   rolePermissions: RolePermission[];
   rateLimitConfig: ParcelRateLimitConfig | null;
   readsCount: number;
+  quotaExceeded?: boolean;
+  connectionFailed?: boolean;
+  errorMessage?: string;
 }> {
   let readsCount = 0;
+  let quotaExceeded = false;
+  let connectionFailed = false;
+  let errorMessage: string | undefined;
   const studentMap = new Map<string, Student>();
   const parcelMap = new Map<string, Parcel>();
   const memberMap = new Map<string, Member>();
@@ -954,6 +1004,8 @@ export async function fetchCloudDataDirectly(
   );
 
   for (const ownerKey of ownerIdsToFetch) {
+    if (quotaExceeded || connectionFailed) break;
+
     try {
       const stQuery = query(collection(db, 'students'), where('ownerId', '==', ownerKey));
       const stSnap = await getDocs(stQuery);
@@ -963,8 +1015,23 @@ export async function fetchCloudDataDirectly(
         studentMap.set(st.studentCode, st);
       });
     } catch (error) {
+      if (isFirestoreQuotaError(error)) {
+        quotaExceeded = true;
+        break;
+      }
+      if (isFirestoreConnectionError(error)) {
+        connectionFailed = true;
+        errorMessage = error instanceof Error ? error.message : String(error);
+        break;
+      }
       if (ownerKey === AUTO_CLOUD_OWNER_ID) {
-        handleFirestoreError(error, OperationType.LIST, 'students');
+        try {
+          handleFirestoreError(error, OperationType.LIST, 'students');
+        } catch (err) {
+          connectionFailed = true;
+          errorMessage = err instanceof Error ? err.message : String(err);
+          break;
+        }
       }
     }
 
@@ -977,8 +1044,23 @@ export async function fetchCloudDataDirectly(
         parcelMap.set(p.id, p);
       });
     } catch (error) {
+      if (isFirestoreQuotaError(error)) {
+        quotaExceeded = true;
+        break;
+      }
+      if (isFirestoreConnectionError(error)) {
+        connectionFailed = true;
+        errorMessage = error instanceof Error ? error.message : String(error);
+        break;
+      }
       if (ownerKey === AUTO_CLOUD_OWNER_ID) {
-        handleFirestoreError(error, OperationType.LIST, 'parcels');
+        try {
+          handleFirestoreError(error, OperationType.LIST, 'parcels');
+        } catch (err) {
+          connectionFailed = true;
+          errorMessage = err instanceof Error ? err.message : String(err);
+          break;
+        }
       }
     }
 
@@ -991,8 +1073,23 @@ export async function fetchCloudDataDirectly(
         memberMap.set(m.memberId, m);
       });
     } catch (error) {
+      if (isFirestoreQuotaError(error)) {
+        quotaExceeded = true;
+        break;
+      }
+      if (isFirestoreConnectionError(error)) {
+        connectionFailed = true;
+        errorMessage = error instanceof Error ? error.message : String(error);
+        break;
+      }
       if (ownerKey === AUTO_CLOUD_OWNER_ID) {
-        handleFirestoreError(error, OperationType.LIST, 'members');
+        try {
+          handleFirestoreError(error, OperationType.LIST, 'members');
+        } catch (err) {
+          connectionFailed = true;
+          errorMessage = err instanceof Error ? err.message : String(err);
+          break;
+        }
       }
     }
 
@@ -1005,34 +1102,53 @@ export async function fetchCloudDataDirectly(
         rolePermMap.set(rp.roleId, rp);
       });
     } catch (error) {
+      if (isFirestoreQuotaError(error)) {
+        quotaExceeded = true;
+        break;
+      }
+      if (isFirestoreConnectionError(error)) {
+        connectionFailed = true;
+        errorMessage = error instanceof Error ? error.message : String(error);
+        break;
+      }
       if (ownerKey === AUTO_CLOUD_OWNER_ID) {
-        handleFirestoreError(error, OperationType.LIST, 'role_permissions');
+        try {
+          handleFirestoreError(error, OperationType.LIST, 'role_permissions');
+        } catch (err) {
+          connectionFailed = true;
+          errorMessage = err instanceof Error ? err.message : String(err);
+          break;
+        }
       }
     }
   }
 
-  try {
-    const rateLimitSnap = await getDoc(doc(db, 'system_settings', 'parcel_rate_limits'));
-    readsCount += 1;
-    if (rateLimitSnap.exists()) {
-      const d = rateLimitSnap.data();
-      rateLimitConfig = {
-        daily: {
-          enabled: Boolean(d.dailyEnabled),
-          limit: Math.max(0, Number(d.dailyLimit) || 1),
-        },
-        weekly: {
-          enabled: Boolean(d.weeklyEnabled),
-          limit: Math.max(0, Number(d.weeklyLimit) || 3),
-        },
-        monthly: {
-          enabled: Boolean(d.monthlyEnabled),
-          limit: Math.max(0, Number(d.monthlyLimit) || 10),
-        },
-      };
+  if (!quotaExceeded && !connectionFailed) {
+    try {
+      const rateLimitSnap = await getDoc(doc(db, 'system_settings', 'parcel_rate_limits'));
+      readsCount += 1;
+      if (rateLimitSnap.exists()) {
+        const d = rateLimitSnap.data();
+        rateLimitConfig = {
+          daily: {
+            enabled: Boolean(d.dailyEnabled),
+            limit: Math.max(0, Number(d.dailyLimit) || 1),
+          },
+          weekly: {
+            enabled: Boolean(d.weeklyEnabled),
+            limit: Math.max(0, Number(d.weeklyLimit) || 3),
+          },
+          monthly: {
+            enabled: Boolean(d.monthlyEnabled),
+            limit: Math.max(0, Number(d.monthlyLimit) || 10),
+          },
+        };
+      }
+    } catch (error) {
+      if (isFirestoreQuotaError(error)) {
+        quotaExceeded = true;
+      }
     }
-  } catch {
-    // fallback
   }
 
   return {
@@ -1044,6 +1160,9 @@ export async function fetchCloudDataDirectly(
     rolePermissions: Array.from(rolePermMap.values()),
     rateLimitConfig,
     readsCount,
+    quotaExceeded,
+    connectionFailed,
+    errorMessage,
   };
 }
 
@@ -1056,13 +1175,26 @@ export function subscribeToWorkspaceCloudData(
   onParcelsSnapshot: (parcels: Parcel[]) => void,
   onMembersSnapshot?: (members: Member[]) => void,
   onRolePermissionsSnapshot?: (rolePermissions: RolePermission[]) => void,
-  onRateLimitConfigSnapshot?: (config: ParcelRateLimitConfig) => void
+  onRateLimitConfigSnapshot?: (config: ParcelRateLimitConfig) => void,
+  onQuotaExceeded?: () => void
 ): () => void {
   const effectiveOwnerId = ownerId || AUTO_CLOUD_OWNER_ID;
   const stQuery = query(collection(db, 'students'), where('ownerId', '==', effectiveOwnerId));
   const pQuery = query(collection(db, 'parcels'), where('ownerId', '==', effectiveOwnerId));
   const mQuery = query(collection(db, 'members'), where('ownerId', '==', effectiveOwnerId));
   const rpQuery = query(collection(db, 'role_permissions'), where('ownerId', '==', effectiveOwnerId));
+
+  const handleListenerError = (error: unknown, path: string) => {
+    if (isFirestoreQuotaError(error)) {
+      onQuotaExceeded?.();
+      return;
+    }
+    try {
+      handleFirestoreError(error, OperationType.LIST, path);
+    } catch {
+      // logged via handleFirestoreError
+    }
+  };
 
   const unsubStudents = onSnapshot(
     stQuery,
@@ -1074,13 +1206,7 @@ export function subscribeToWorkspaceCloudData(
       list.sort((a, b) => a.seqNo - b.seqNo);
       onStudentsSnapshot(list);
     },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.LIST, 'students');
-      } catch {
-        // logged via handleFirestoreError
-      }
-    }
+    (error) => handleListenerError(error, 'students')
   );
 
   const unsubParcels = onSnapshot(
@@ -1093,13 +1219,7 @@ export function subscribeToWorkspaceCloudData(
       list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       onParcelsSnapshot(list);
     },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.LIST, 'parcels');
-      } catch {
-        // logged via handleFirestoreError
-      }
-    }
+    (error) => handleListenerError(error, 'parcels')
   );
 
   const unsubMembers = onSnapshot(
@@ -1112,13 +1232,7 @@ export function subscribeToWorkspaceCloudData(
       });
       onMembersSnapshot(list);
     },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.LIST, 'members');
-      } catch {
-        // logged via handleFirestoreError
-      }
-    }
+    (error) => handleListenerError(error, 'members')
   );
 
   const unsubRolePerms = onSnapshot(
@@ -1131,13 +1245,7 @@ export function subscribeToWorkspaceCloudData(
       });
       onRolePermissionsSnapshot(list);
     },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.LIST, 'role_permissions');
-      } catch {
-        // logged via handleFirestoreError
-      }
-    }
+    (error) => handleListenerError(error, 'role_permissions')
   );
 
   const rateLimitDocRef = doc(db, 'system_settings', 'parcel_rate_limits');
@@ -1163,8 +1271,10 @@ export function subscribeToWorkspaceCloudData(
         });
       }
     },
-    () => {
-      // silent fallback
+    (error) => {
+      if (isFirestoreQuotaError(error)) {
+        onQuotaExceeded?.();
+      }
     }
   );
 
@@ -1174,6 +1284,184 @@ export function subscribeToWorkspaceCloudData(
     unsubMembers();
     unsubRolePerms();
     unsubRateLimit();
+  };
+}
+
+/**
+ * อัปโหลดรายการที่พักไว้ในไฟล์สำรองของระบบ (PendingWriteItem[]) ขึ้น Firestore แบบ Batch
+ * (ใช้ 0 Reads ในการเขียน และปฏิบัติตามกฎ Security Rules ทุกประการ)
+ */
+export async function uploadPendingWritesBatchToFirestore(
+  items: PendingWriteItem[],
+  ownerId: string = AUTO_CLOUD_OWNER_ID,
+  onProgress?: (completed: number, total: number) => void
+): Promise<{ uploadedCount: number; quotaExceeded?: boolean; connectionFailed?: boolean }> {
+  if (items.length === 0) return { uploadedCount: 0 };
+  const effectiveOwnerId = ownerId || AUTO_CLOUD_OWNER_ID;
+  const CHUNK_SIZE = 400;
+  let uploadedCount = 0;
+
+  for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+    const chunk = items.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+
+    for (const item of chunk) {
+      if (item.collection === 'parcels') {
+        const safeId = sanitizeId(item.docId, 64);
+        const docRef = doc(db, 'parcels', safeId);
+        if (item.action === 'delete') {
+          batch.delete(docRef);
+        } else if (item.data) {
+          const payload = buildValidParcelPayload(item.data as Parcel, effectiveOwnerId);
+          batch.set(docRef, payload);
+        }
+      } else if (item.collection === 'students') {
+        const safeCode = sanitizeId(item.docId, 20);
+        const docRef = doc(db, 'students', safeCode);
+        if (item.action === 'delete') {
+          batch.delete(docRef);
+        } else if (item.data) {
+          const payload = buildValidStudentPayload(item.data as Student, effectiveOwnerId);
+          batch.set(docRef, payload);
+        }
+      } else if (item.collection === 'members') {
+        const safeId = sanitizeId(item.docId, 64);
+        const docRef = doc(db, 'members', safeId);
+        if (item.action === 'delete') {
+          batch.delete(docRef);
+        } else if (item.data) {
+          const payload = buildValidMemberPayload(item.data as Member, effectiveOwnerId);
+          batch.set(docRef, payload);
+        }
+      } else if (item.collection === 'role_permissions') {
+        const safeRoleId = sanitizeId(item.docId, 20);
+        const docRef = doc(db, 'role_permissions', safeRoleId);
+        if (item.action === 'delete') {
+          batch.delete(docRef);
+        } else if (item.data) {
+          const payload = buildValidRolePermissionPayload(
+            item.data as RolePermission,
+            effectiveOwnerId
+          );
+          batch.set(docRef, payload);
+        }
+      } else if (item.collection === 'system_settings') {
+        const docRef = doc(db, 'system_settings', 'parcel_rate_limits');
+        if (item.action !== 'delete' && item.data) {
+          const payload = buildValidSystemSettingPayload(
+            item.data as ParcelRateLimitConfig,
+            effectiveOwnerId
+          );
+          batch.set(docRef, payload);
+        }
+      }
+    }
+
+    try {
+      await batch.commit();
+      uploadedCount += chunk.length;
+      if (onProgress) {
+        onProgress(uploadedCount, items.length);
+      }
+    } catch (error) {
+      if (isFirestoreQuotaError(error)) {
+        return { uploadedCount, quotaExceeded: true };
+      }
+      if (isFirestoreConnectionError(error)) {
+        return { uploadedCount, connectionFailed: true };
+      }
+      handleFirestoreError(error, OperationType.WRITE, 'batch/staged_upload');
+    }
+  }
+
+  return { uploadedCount };
+}
+
+/**
+ * ค้นหานักเรียนรายบุคคลจาก Firebase (Fallback เมื่อไม่พบในข้อมูลสำรองของระบบ ใช้เพียง 1 Read)
+ */
+export async function findStudentInFirestoreFallback(
+  studentCode: string
+): Promise<{ student: Student | null; readsCount: number; quotaExceeded?: boolean }> {
+  const formatted = formatStudentCode(studentCode.trim());
+  const safeCode = sanitizeId(formatted, 20);
+  if (!safeCode || safeCode === 'ID001') {
+    return { student: null, readsCount: 0 };
+  }
+  try {
+    const snap = await getDoc(doc(db, 'students', safeCode));
+    if (snap.exists()) {
+      return {
+        student: mapDocToStudent(snap.id, snap.data(), AUTO_CLOUD_OWNER_ID),
+        readsCount: 1,
+      };
+    }
+    return { student: null, readsCount: 1 };
+  } catch (error) {
+    if (isFirestoreQuotaError(error)) {
+      return { student: null, readsCount: 0, quotaExceeded: true };
+    }
+    return { student: null, readsCount: 0 };
+  }
+}
+
+/**
+ * ค้นหาพัสดุจาก Firebase แบบเจาะจง (Fallback เมื่อไม่พบในข้อมูลสำรองของระบบ เพื่อประหยัด Quota)
+ */
+export async function findParcelInFirestoreFallback(
+  keyword: string,
+  ownerId: string = AUTO_CLOUD_OWNER_ID
+): Promise<{ parcels: Parcel[]; readsCount: number; quotaExceeded?: boolean }> {
+  const clean = keyword.trim();
+  if (!clean) return { parcels: [], readsCount: 0 };
+
+  let readsCount = 0;
+  const resultMap = new Map<string, Parcel>();
+  const effectiveOwnerId = ownerId || AUTO_CLOUD_OWNER_ID;
+
+  // 1. ค้นหาตรงจาก Document ID / Tracking Number (ใช้ 1 Read)
+  const safeTracking = clean.replace(/[^a-zA-Z0-9_\-]/g, '');
+  if (safeTracking.length >= 4 && safeTracking.length <= 64) {
+    try {
+      const snap = await getDoc(doc(db, 'parcels', safeTracking));
+      readsCount += 1;
+      if (snap.exists()) {
+        const p = mapDocToParcel(snap.id, snap.data(), effectiveOwnerId);
+        resultMap.set(p.id, p);
+      }
+    } catch (error) {
+      if (isFirestoreQuotaError(error)) {
+        return { parcels: [], readsCount, quotaExceeded: true };
+      }
+    }
+  }
+
+  // 2. หากยังไม่พบและคำค้นหาเป็นรหัสนักเรียน (ตัวเลข 4-6 หลัก) ให้ Query เฉพาะของนักเรียนคนนั้นแบบจำกัดจำนวน
+  if (resultMap.size === 0 && /^\d{4,6}$/.test(clean)) {
+    const formattedCode = formatStudentCode(clean);
+    try {
+      const q = query(
+        collection(db, 'parcels'),
+        where('ownerId', '==', effectiveOwnerId),
+        where('studentCode', '==', formattedCode),
+        limit(30)
+      );
+      const snap = await getDocs(q);
+      readsCount += snap.size || 1;
+      snap.forEach((docSnap) => {
+        const p = mapDocToParcel(docSnap.id, docSnap.data(), effectiveOwnerId);
+        resultMap.set(p.id, p);
+      });
+    } catch (error) {
+      if (isFirestoreQuotaError(error)) {
+        return { parcels: Array.from(resultMap.values()), readsCount, quotaExceeded: true };
+      }
+    }
+  }
+
+  return {
+    parcels: Array.from(resultMap.values()),
+    readsCount,
   };
 }
 

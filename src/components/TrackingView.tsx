@@ -34,6 +34,7 @@ export const TrackingView: React.FC = () => {
     students,
     parcels,
     searchParcelsLocal,
+    searchParcelsWithCloudFallback,
     recordLocalSearchSaving,
     updateParcelStatus,
     bulkUpdateParcelStatus,
@@ -51,6 +52,8 @@ export const TrackingView: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
   const [selectedDormitory, setSelectedDormitory] = useState<string>('ALL');
   const [onlyOverLimit, setOnlyOverLimit] = useState<boolean>(false);
+  const [isSearchingCloudFallback, setIsSearchingCloudFallback] = useState<boolean>(false);
+  const [searchSource, setSearchSource] = useState<'local' | 'firebase' | null>(null);
 
   // สถานะกล้องสแกนค้นหาพัสดุด้วยกล้องหลังมือถือ
   const [isScannerOpen, setIsScannerOpen] = useState<boolean>(false);
@@ -70,15 +73,47 @@ export const TrackingView: React.FC = () => {
   );
 
   const handleExecuteSearch = useCallback(
-    (explicitKeyword?: string) => {
+    async (explicitKeyword?: string) => {
       const target = explicitKeyword !== undefined ? explicitKeyword : searchInput;
       const trimmed = target.trim();
       setSearchKeyword(trimmed);
-      if (trimmed.length > 0) {
+      if (!trimmed) {
+        setSearchSource(null);
+        return;
+      }
+
+      const localMatches = searchParcelsLocal(trimmed, selectedStatus, selectedDormitory);
+      if (localMatches.length > 0) {
         recordLocalSearchSaving();
+        setSearchSource('local');
+        return;
+      }
+
+      if (trimmed.length >= 4) {
+        setIsSearchingCloudFallback(true);
+        try {
+          const fallbackRes = await searchParcelsWithCloudFallback(
+            trimmed,
+            selectedStatus,
+            selectedDormitory
+          );
+          setSearchSource(fallbackRes.source);
+        } finally {
+          setIsSearchingCloudFallback(false);
+        }
+      } else {
+        recordLocalSearchSaving();
+        setSearchSource('local');
       }
     },
-    [searchInput, recordLocalSearchSaving]
+    [
+      searchInput,
+      searchParcelsLocal,
+      selectedStatus,
+      selectedDormitory,
+      recordLocalSearchSaving,
+      searchParcelsWithCloudFallback,
+    ]
   );
 
   const handleScanDetected = useCallback(
@@ -210,7 +245,7 @@ export const TrackingView: React.FC = () => {
         <div className="flex items-center gap-2 text-xs text-slate-600 bg-white border border-slate-200 px-3.5 py-2.5 rounded-xl">
           <Database className="w-4 h-4 text-emerald-600 shrink-0" />
           <span>
-            ค้นหาได้ทันทีจากแคชในเครื่อง (<span className="font-mono font-bold">0</span> Firestore Reads/Keystroke)
+            ค้นหาจากข้อมูลสำรองในเครื่องก่อน (<span className="font-mono font-bold">0</span> Reads) → ค้นหา Firebase เฉพาะเมื่อไม่พบ
           </span>
         </div>
       </div>
@@ -232,7 +267,7 @@ export const TrackingView: React.FC = () => {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
-                    handleExecuteSearch();
+                    void handleExecuteSearch();
                   }
                 }}
                 placeholder="ค้นหาด้วย เลข Tracking, รหัสนักเรียน, ชื่อจริง หรือ ชื่อเล่น..."
@@ -245,6 +280,7 @@ export const TrackingView: React.FC = () => {
                   onClick={() => {
                     setSearchInput('');
                     setSearchKeyword('');
+                    setSearchSource(null);
                   }}
                   className="absolute right-3 top-1/2 -translate-y-1/2 min-h-[38px] min-w-[38px] flex items-center justify-center text-slate-400 hover:text-slate-700 cursor-pointer"
                 >
@@ -422,10 +458,25 @@ export const TrackingView: React.FC = () => {
             )}
             <span>
               {searchKeyword.trim() ? (
-                <>
-                  พบพัสดุตรงตามการค้นหา{' '}
-                  <strong className="font-mono text-slate-900 tabular-nums">{filteredParcels.length}</strong> รายการ
-                </>
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  <span>
+                    พบพัสดุตรงตามการค้นหา{' '}
+                    <strong className="font-mono text-slate-900 tabular-nums">{filteredParcels.length}</strong> รายการ
+                  </span>
+                  {isSearchingCloudFallback ? (
+                    <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">
+                      ไม่พบในไฟล์สำรอง · กำลังค้นหาจาก Firebase...
+                    </span>
+                  ) : searchSource === 'firebase' ? (
+                    <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 font-semibold">
+                      ไม่พบในไฟล์สำรอง → ค้นหาจาก Firebase แล้ว
+                    </span>
+                  ) : searchSource === 'local' ? (
+                    <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
+                      ค้นหาจากข้อมูลสำรองในระบบ (0 Firebase Reads)
+                    </span>
+                  ) : null}
+                </span>
               ) : (
                 'กรุณาระบุคำค้นหาเพื่อแสดงรายการพัสดุ'
               )}
@@ -444,7 +495,7 @@ export const TrackingView: React.FC = () => {
                 พิมพ์คำค้นหา หรือสแกนบาร์โค้ดเพื่อค้นหาพัสดุ
               </h3>
               <p className="text-xs text-slate-500 leading-relaxed">
-                ระบบจะแสดงเฉพาะรายการพัสดุที่ตรงตามการค้นหาเท่านั้น สามารถค้นหาได้ด้วย:
+                ระบบจะค้นหาจากข้อมูลสำรองในเครื่องก่อน เพื่อลดโควตาการอ่าน Firebase และจะค้นหาจาก Firebase เมื่อไม่พบในเครื่องเท่านั้น
               </p>
               <div className="pt-2 flex flex-wrap justify-center gap-1.5 text-xs">
                 <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-mono font-semibold rounded-lg">
@@ -462,10 +513,19 @@ export const TrackingView: React.FC = () => {
               </div>
             </div>
           </div>
+        ) : isSearchingCloudFallback ? (
+          <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3">
+            <p className="text-base font-bold text-slate-800">
+              ไม่พบในข้อมูลสำรองของระบบ กำลังค้นหา "{searchKeyword}" ใน Firebase...
+            </p>
+            <p className="text-xs text-slate-500">
+              ระบบใช้การค้นหาแบบเจาะจงเพื่อประหยัดโควตาการอ่านข้อมูล
+            </p>
+          </div>
         ) : filteredParcels.length === 0 ? (
           <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3">
             <p className="text-base font-bold text-slate-800">
-              ไม่พบรายการพัสดุที่ตรงกับคำค้นหา "{searchKeyword}"
+              ไม่พบรายการพัสดุที่ตรงกับคำค้นหา "{searchKeyword}" ทั้งในข้อมูลสำรองและ Firebase
             </p>
             <p className="text-xs text-slate-500">
               ลองตรวจสอบเลขพัสดุ รหัสนักเรียน หรือเปลี่ยนคำค้นหา
@@ -475,6 +535,7 @@ export const TrackingView: React.FC = () => {
               onClick={() => {
                 setSearchInput('');
                 setSearchKeyword('');
+                setSearchSource(null);
                 setSelectedStatus('ALL');
                 setSelectedDormitory('ALL');
                 setOnlyOverLimit(false);

@@ -7,7 +7,7 @@ import {
   BarChart3,
   BookOpen,
   RefreshCw,
-  CloudCheck,
+  UploadCloud,
   AlertTriangle,
   X,
   LogOut,
@@ -24,8 +24,11 @@ import {
   SlidersHorizontal,
   Barcode,
   Layers,
+  Clock,
+  WifiOff,
 } from 'lucide-react';
 import { ParcelSystemProvider, useParcelSystem } from './context/ParcelSystemContext';
+import { FIRESTORE_UPGRADE_URL, FIRESTORE_PRICING_URL } from './services/firebase';
 import { Member, AppMenuKey, APP_MENU_DEFINITIONS } from './types/parcel';
 import { InboundView, InboundQuickAction } from './components/InboundView';
 import { TrackingView } from './components/TrackingView';
@@ -55,11 +58,17 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
     weeklyWarningPopup,
     closeWeeklyWarningPopup,
     pendingWrites,
+    localBackupStatus,
+    studentBackupStatus,
+    firestoreConnectionStatus,
     quotaMetrics,
     syncMode,
     setSyncMode,
     isSyncing,
+    quotaExceeded,
     syncPendingToFirebase,
+    uploadStagedToFirebaseNow,
+    pullFromFirebaseToLocal,
     toastMessage,
     clearToast,
   } = useParcelSystem();
@@ -286,7 +295,9 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                   <div className="absolute right-0 mt-2 w-84 bg-white rounded-2xl shadow-2xl border border-slate-200 py-2 z-50 animate-in fade-in slide-in-from-top-1">
                     <div className="px-3.5 py-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 flex items-center justify-between">
                       <span>เมนูตั้งค่า & ดูแลระบบ</span>
-                      <span className="text-[9px] font-normal text-emerald-600 font-mono">Live Firestore DB</span>
+                      <span className="text-[9px] font-normal text-indigo-600 font-mono">
+                        Local Backup · 00:00 Sync
+                      </span>
                     </div>
 
                     {/* หมวดหมู่: การดูแลของผู้ดูแลระบบ */}
@@ -458,17 +469,45 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                       )}
                     </div>
 
-                    {/* ปุ่มรีเฟรช Cloud ย้ายมาไว้ในเมนูตั้งค่า */}
-                    <div className="mt-1 pt-1.5 border-t border-slate-100 px-1">
+                    {/* ปุ่มจัดการซิงก์ไฟล์สำรองในเครื่อง & Firebase */}
+                    <div className="mt-1 pt-1.5 border-t border-slate-100 px-1 space-y-1">
                       <button
                         type="button"
                         onClick={() => {
-                          syncPendingToFirebase();
+                          void uploadStagedToFirebaseNow();
+                          setIsSettingsOpen(false);
+                        }}
+                        disabled={isSyncing || pendingWrites.length === 0}
+                        className="w-full px-2.5 py-2 text-left text-xs flex items-center justify-between rounded-lg hover:bg-indigo-50 transition-colors cursor-pointer disabled:opacity-50 text-slate-700"
+                        title="อัปโหลดไฟล์สำรองในระบบขึ้น Firebase ทันทีและลบไฟล์ชั่วคราว"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                            <UploadCloud className={`w-3.5 h-3.5 ${isSyncing ? 'animate-pulse' : ''}`} />
+                          </div>
+                          <div>
+                            <div className="font-bold text-slate-900">
+                              {isSyncing ? 'กำลังอัปโหลด...' : 'อัปโหลดขึ้น Firebase ทันที'}
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              ปกติระบบอัปโหลดอัตโนมัติ 00:00 น. แล้วลบไฟล์สำรอง
+                            </div>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200 font-semibold">
+                          {pendingWrites.length} รอส่ง
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void pullFromFirebaseToLocal();
                           setIsSettingsOpen(false);
                         }}
                         disabled={isSyncing}
                         className="w-full px-2.5 py-2 text-left text-xs flex items-center justify-between rounded-lg hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-50 text-slate-700"
-                        title="ดึงข้อมูลล่าสุดจากฐานข้อมูล Firestore"
+                        title="ดึงข้อมูลล่าสุดจากฐานข้อมูล Firestore มาเก็บเป็นข้อมูลสำรองในระบบ"
                       >
                         <div className="flex items-center gap-2.5">
                           <div className="w-6 h-6 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
@@ -476,13 +515,13 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                           </div>
                           <div>
                             <div className="font-bold text-slate-900">
-                              {isSyncing ? 'กำลังซิงค์...' : 'รีเฟรช Cloud'}
+                              {isSyncing ? 'กำลังซิงค์...' : 'ดึงข้อมูลจาก Firebase'}
                             </div>
-                            <div className="text-[10px] text-slate-400">ดึงข้อมูลล่าสุดจาก Firestore</div>
+                            <div className="text-[10px] text-slate-400">อัปเดตแคชสำรองในเครื่องจาก Firestore</div>
                           </div>
                         </div>
                         <span className="text-[10px] font-mono text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 font-semibold">
-                          Live DB
+                          Pull DB
                         </span>
                       </button>
                     </div>
@@ -493,16 +532,33 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
           </nav>
         </div>
 
-        {/* แถวที่ 2 (วางไว้บรรทัดใหม่): ข้อมูล Direct Cloud DB (แสดงเฉพาะ Desktop ซ่อนบนมือถือและแท็บเล็ต) และปุ่มรวมผู้ดูแลระบบ+ออกจากระบบ */}
+        {/* แถวที่ 2 (วางไว้บรรทัดใหม่): สถานะไฟล์สำรองในเครื่อง + กำหนดการอัปโหลด 00:00 น. และปุ่มผู้ดูแลระบบ+ออกจากระบบ */}
         <div className="bg-slate-50/95 border-b border-slate-200/90 px-4 md:px-8 py-2 flex items-center justify-end lg:justify-between gap-2.5 text-xs">
-          {/* ข้อมูลการเชื่อมต่อฐานข้อมูล Cloud DB สด - ซ่อนบนหน้าจอมือถือและแท็บเล็ต (hidden บนจอเล็กถึงแท็บเล็ต แสดงเฉพาะ lg ขึ้นไป) */}
+          {/* ข้อมูลไฟล์สำรองในระบบและตารางเวลาอัปโหลดอัตโนมัติ 00:00 น. - ซ่อนบนมือถือ */}
           <div className="hidden lg:flex items-center gap-2 text-slate-600">
-            <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              Direct Cloud DB
+            <span className="inline-flex items-center gap-1.5 font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200">
+              <Clock className="w-3.5 h-3.5 text-indigo-600" />
+              <span>สำรองในระบบ · อัปโหลด 00:00 น.</span>
             </span>
+            {pendingWrites.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => void uploadStagedToFirebaseNow()}
+                disabled={isSyncing}
+                title={`คลิกเพื่ออัปโหลดข้อมูลที่สำรองไว้ (${localBackupStatus.stagingFilePath}) ขึ้น Firebase ทันที`}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-semibold transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <UploadCloud className="w-3.5 h-3.5 text-amber-700" />
+                <span>รออัปโหลด {pendingWrites.length} รายการ (คลิกส่งทันที)</span>
+              </button>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg border border-emerald-200 font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span>ไม่มีไฟล์ค้างส่ง</span>
+              </span>
+            )}
             <span className="text-slate-500 text-xs">
-              ({connectedEmail}): นักเรียน <strong className="text-slate-900 font-mono tabular-nums">{students.length}</strong> คน · พัสดุ <strong className="text-slate-900 font-mono tabular-nums">{parcels.length}</strong> ชิ้น
+              ({connectedEmail}): นักเรียน <strong className="text-slate-900 font-mono tabular-nums">{students.length}</strong> คน (สำรอง <strong className="text-indigo-700 font-mono tabular-nums">{studentBackupStatus.count}</strong>) · พัสดุ <strong className="text-slate-900 font-mono tabular-nums">{parcels.length}</strong> ชิ้น
             </span>
           </div>
 
@@ -562,6 +618,72 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
         </div>
       </header>
 
+      {/* แจ้งเตือนเมื่อโควตาการอ่านข้อมูล Firestore รายวันเต็ม */}
+      {quotaExceeded && (
+        <div className="no-print max-w-7xl w-full mx-auto px-4 md:px-8 pt-4">
+          <div
+            role="status"
+            className="px-4 py-3 rounded-xl border bg-amber-50 border-amber-300 text-amber-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-xs"
+          >
+            <div className="flex items-start sm:items-center gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5 sm:mt-0" />
+              <div>
+                <span className="font-bold">โควตาการอ่านข้อมูล Firestore รายวัน (Free Tier) เต็มแล้ว: </span>
+                <span>
+                  โควตาจะรีเซ็ตในวันถัดไป (Spark Plan / Enterprise Edition){' '}
+                  <a
+                    href={FIRESTORE_PRICING_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline font-semibold hover:text-amber-700"
+                  >
+                    ข้อมูลโควตา
+                  </a>
+                </span>
+              </div>
+            </div>
+            <a
+              href={FIRESTORE_UPGRADE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-[11px] text-center transition-colors"
+            >
+              อัปเกรดใน Firebase Console
+            </a>
+          </div>
+        </div>
+      )}
+
+      {/* แจ้งเตือนเมื่อเชื่อมต่อ Firestore ไม่ได้และระบบสลับมาใช้ฐานข้อมูลสำรองรายชื่อนักเรียน */}
+      {firestoreConnectionStatus === 'offline_fallback' && !quotaExceeded && (
+        <div className="no-print max-w-7xl w-full mx-auto px-4 md:px-8 pt-4">
+          <div
+            role="status"
+            className="px-4 py-3 rounded-xl border bg-indigo-50 border-indigo-300 text-indigo-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-xs"
+          >
+            <div className="flex items-start sm:items-center gap-2.5">
+              <WifiOff className="w-4 h-4 text-indigo-700 shrink-0 mt-0.5 sm:mt-0" />
+              <div>
+                <span className="font-bold">ไม่สามารถเชื่อมต่อ Firestore ได้ในขณะนี้: </span>
+                <span>
+                  ระบบกำลังทำงานจากฐานข้อมูลสำรองรายชื่อนักเรียนในเครื่อง (
+                  <strong className="font-mono">{studentBackupStatus.count.toLocaleString()}</strong> คน) และจะอัปโหลดข้อมูลใหม่ขึ้น Firebase เมื่อเชื่อมต่อได้
+                </span>
+              </div>
+            </div>
+            {isMenuAllowed('students') && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('students')}
+                className="shrink-0 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-[11px] transition-colors cursor-pointer"
+              >
+                จัดการฐานข้อมูลสำรองนักเรียน
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* แจ้งเตือนสถานะการทำงาน (Toast Notification) */}
       {toastMessage && (
         <div className="no-print max-w-7xl w-full mx-auto px-4 md:px-8 pt-4">
@@ -613,9 +735,9 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-[11px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  Direct Cloud Firestore
+                <span className="text-[11px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-indigo-600" />
+                  Local Staging ({pendingWrites.length} รอส่ง · อัตโนมัติ 00:00 น.)
                 </span>
               </div>
             </div>
@@ -1229,12 +1351,41 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                 </button>
               )}
 
-              {/* ปุ่มรีเฟรช Cloud สำหรับมือถือ */}
-              <div className="pt-2 border-t border-slate-100">
+              {/* ปุ่มจัดการซิงก์ไฟล์สำรองในระบบ & Firebase สำหรับมือถือ */}
+              <div className="pt-2 border-t border-slate-100 space-y-2">
+                {pendingWrites.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void uploadStagedToFirebaseNow();
+                      setIsMobileSettingsOpen(false);
+                    }}
+                    disabled={isSyncing}
+                    className="w-full p-3 text-left rounded-xl flex items-center justify-between bg-indigo-600 hover:bg-indigo-700 text-white transition-colors cursor-pointer disabled:opacity-50 shadow-xs"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-7 h-7 rounded-lg bg-indigo-500 flex items-center justify-center shrink-0">
+                        <UploadCloud className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold">
+                          {isSyncing ? 'กำลังอัปโหลด...' : 'อัปโหลดขึ้น Firebase ทันที'}
+                        </div>
+                        <div className="text-[10px] text-indigo-100 font-normal">
+                          ส่งข้อมูลสำรองขึ้น Firebase แล้วลบไฟล์ชั่วคราว
+                        </div>
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono bg-white/20 px-2 py-0.5 rounded font-semibold">
+                      {pendingWrites.length} รายการ
+                    </span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => {
-                    syncPendingToFirebase();
+                    void pullFromFirebaseToLocal();
                     setIsMobileSettingsOpen(false);
                   }}
                   disabled={isSyncing}
@@ -1246,13 +1397,15 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                     </div>
                     <div>
                       <div className="text-xs font-bold">
-                        {isSyncing ? 'กำลังโหลดข้อมูล...' : 'รีเฟรช Cloud'}
+                        {isSyncing ? 'กำลังโหลดข้อมูล...' : 'ดึงข้อมูลจาก Firebase'}
                       </div>
-                      <div className="text-[10px] text-slate-400 font-normal">ดึงข้อมูลล่าสุดจากฐานข้อมูล Firestore</div>
+                      <div className="text-[10px] text-slate-400 font-normal">
+                        อัปเดตข้อมูลสำรองในเครื่องจาก Firestore
+                      </div>
                     </div>
                   </div>
                   <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/40 font-semibold">
-                    Live Sync
+                    Pull DB
                   </span>
                 </button>
               </div>
