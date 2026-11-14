@@ -42,6 +42,7 @@ import {
   INITIAL_PARCELS,
   ParcelRateLimitConfig,
   DEFAULT_PARCEL_RATE_LIMIT_CONFIG,
+  FirestoreQuotaStatus,
   getRelativeDateString,
   formatStudentCode,
 } from '../types/parcel';
@@ -159,6 +160,50 @@ async function testConnection() {
   }
 }
 testConnection();
+
+/**
+ * ตรวจสอบสถานะ Quota และการเชื่อมต่อของ Firestore แบบเบา (ใช้สูงสุด 1 Read)
+ * หาก Quota ไม่เต็ม -> คืน available: true เพื่อให้บันทึกลงฐานข้อมูล Firestore โดยตรง
+ * หาก Quota เต็ม -> คืน available: false, quotaExceeded: true เพื่อสลับไปบันทึกใน localStorage
+ */
+export async function checkFirestoreQuotaStatus(): Promise<FirestoreQuotaStatus> {
+  const checkedAt = new Date().toISOString();
+  try {
+    await getDocFromServer(doc(db, 'system_settings', 'parcel_rate_limits'));
+    return {
+      available: true,
+      quotaExceeded: false,
+      connectionFailed: false,
+      checkedAt,
+    };
+  } catch (error) {
+    if (isFirestoreQuotaError(error)) {
+      return {
+        available: false,
+        quotaExceeded: true,
+        connectionFailed: false,
+        checkedAt,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (isFirestoreConnectionError(error)) {
+      return {
+        available: false,
+        quotaExceeded: false,
+        connectionFailed: true,
+        checkedAt,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    // กรณีอื่น (เช่น document ยังไม่มีหรือ permission error ที่ไม่ใช่ quota/offline) ถือว่าโควตาไม่เต็ม
+    return {
+      available: true,
+      quotaExceeded: false,
+      connectionFailed: false,
+      checkedAt,
+    };
+  }
+}
 
 // 4. ฟังก์ชันช่วยจัดรูปแบบข้อมูล (Defensive Payload Sanitization) ให้ตรงตาม firebase-blueprint.json
 export function sanitizeId(raw: string, maxLen = 64): string {

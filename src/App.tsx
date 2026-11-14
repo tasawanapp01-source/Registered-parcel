@@ -26,6 +26,8 @@ import {
   Layers,
   Clock,
   WifiOff,
+  Download,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { ParcelSystemProvider, useParcelSystem } from './context/ParcelSystemContext';
 import { FIRESTORE_UPGRADE_URL, FIRESTORE_PRICING_URL } from './services/firebase';
@@ -71,6 +73,8 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
     uploadStagedToFirebaseNow,
     uploadAllBackupParcelsToFirebaseNow,
     pullFromFirebaseToLocal,
+    exportLocalStoragePendingJson,
+    exportLocalStorageParcelsCsv,
     toastMessage,
     clearToast,
   } = useParcelSystem();
@@ -536,8 +540,35 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
 
         {/* แถวที่ 2 (วางไว้บรรทัดใหม่): ยอดรับเข้าพัสดุรวมทุก User ในฐานข้อมูลสำรอง + สถานะพร้อมอัปโหลด 00:00 น. และปุ่มผู้ดูแลระบบ+ออกจากระบบ */}
         <div className="bg-slate-50/95 border-b border-slate-200/90 px-4 md:px-8 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs">
-          {/* ข้อมูลยอดพัสดุรวมทุก User ในฐานข้อมูลสำรอง และตารางเวลาอัปโหลดอัตโนมัติ 00:00 น. */}
+          {/* ข้อมูลสถานะ Quota + ยอดพัสดุรวมทุก User และปุ่มส่งออก/อัปโหลด */}
           <div className="hidden lg:flex items-center flex-wrap gap-2 text-slate-600">
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-bold ${
+                quotaExceeded
+                  ? 'bg-rose-50 text-rose-800 border-rose-300'
+                  : firestoreConnectionStatus === 'offline_fallback'
+                  ? 'bg-amber-50 text-amber-900 border-amber-300'
+                  : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+              }`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  quotaExceeded
+                    ? 'bg-rose-500'
+                    : firestoreConnectionStatus === 'offline_fallback'
+                    ? 'bg-amber-500'
+                    : 'bg-emerald-500'
+                }`}
+              />
+              <span>
+                {quotaExceeded
+                  ? 'Quota เต็ม · บันทึกลง localStorage'
+                  : firestoreConnectionStatus === 'offline_fallback'
+                  ? 'ออฟไลน์ · บันทึกลง localStorage'
+                  : 'Firestore ปกติ · รับลงฐานข้อมูลโดยตรง'}
+              </span>
+            </span>
+
             <span className="inline-flex items-center gap-1.5 font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200">
               <Database className="w-3.5 h-3.5 text-indigo-600" />
               <span>
@@ -553,60 +584,101 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
               </span>
             </span>
             {pendingWrites.length > 0 ? (
-              <button
-                type="button"
-                onClick={() => void uploadStagedToFirebaseNow()}
-                disabled={isSyncing}
-                title={`คลิกเพื่ออัปโหลดข้อมูลที่สำรองไว้ (${localBackupStatus.stagingFilePath}) ขึ้น Firebase ทันที`}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-semibold transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <UploadCloud className="w-3.5 h-3.5 text-amber-700" />
-                <span>พร้อมอัปโหลด {pendingWrites.length.toLocaleString()} รายการ (คลิกส่งทันที)</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => void uploadStagedToFirebaseNow()}
+                  disabled={isSyncing}
+                  title="อัปโหลดข้อมูลที่ค้างใน localStorage เข้าสู่ Firestore ทันที"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <UploadCloud className="w-3.5 h-3.5 text-amber-700" />
+                  <span>อัปโหลดจาก localStorage ({pendingWrites.length.toLocaleString()} รายการ)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={exportLocalStoragePendingJson}
+                  title="ส่งออกข้อมูลที่บันทึกไว้ใน localStorage เป็นไฟล์ JSON"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-semibold transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>ส่งออก JSON</span>
+                </button>
+              </>
             ) : parcelBackupSummary.totalParcelsInBackup > 0 ? (
               <button
                 type="button"
                 onClick={() => void uploadAllBackupParcelsToFirebaseNow()}
                 disabled={isSyncing}
                 title="เตรียมพัสดุทั้งหมดในฐานข้อมูลสำรองทุก User และอัปโหลดขึ้น Firebase ทันที"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-semibold transition-colors cursor-pointer disabled:opacity-50"
               >
-                <UploadCloud className="w-3.5 h-3.5 text-emerald-700" />
-                <span>ข้อมูลสำรองพร้อมอัปโหลด ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น)</span>
+                <UploadCloud className="w-3.5 h-3.5 text-indigo-600" />
+                <span>ซิงก์พัสดุทั้งหมดขึ้น Firestore ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()})</span>
               </button>
-            ) : (
-              <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg border border-emerald-200 font-medium">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                <span>อัปโหลด 00:00 น. · ไม่มีค้างส่ง</span>
-              </span>
-            )}
+            ) : null}
             <span className="text-slate-500 text-xs">
               ({connectedEmail}): นักเรียน <strong className="text-slate-900 font-mono tabular-nums">{students.length}</strong> คน (สำรอง <strong className="text-indigo-700 font-mono tabular-nums">{studentBackupStatus.count}</strong>) · {parcelBackupSummary.byUser.length} User
             </span>
           </div>
 
-          {/* แถบย่อบนมือถือ/แท็บเล็ต แสดงยอดพัสดุรวมทุก User ในฐานข้อมูลสำรอง */}
-          <div className="flex lg:hidden items-center gap-1.5 text-[11px]">
+          {/* แถบย่อบนมือถือ/แท็บเล็ต แสดงสถานะ Quota + ยอดพัสดุรวมทุก User */}
+          <div className="flex lg:hidden items-center flex-wrap gap-1.5 text-[11px]">
+            <span
+              className={`inline-flex items-center gap-1 font-bold px-2 py-1 rounded-lg border ${
+                quotaExceeded
+                  ? 'bg-rose-50 text-rose-800 border-rose-300'
+                  : firestoreConnectionStatus === 'offline_fallback'
+                  ? 'bg-amber-50 text-amber-900 border-amber-300'
+                  : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  quotaExceeded
+                    ? 'bg-rose-500'
+                    : firestoreConnectionStatus === 'offline_fallback'
+                    ? 'bg-amber-500'
+                    : 'bg-emerald-500'
+                }`}
+              />
+              <span>
+                {quotaExceeded
+                  ? 'Quota เต็ม (localStorage)'
+                  : firestoreConnectionStatus === 'offline_fallback'
+                  ? 'ออฟไลน์'
+                  : 'Firestore ตรง'}
+              </span>
+            </span>
             <span className="inline-flex items-center gap-1 font-semibold text-indigo-800 bg-indigo-50 px-2 py-1 rounded-lg border border-indigo-200">
               <Database className="w-3 h-3 text-indigo-600 shrink-0" />
               <span>
-                สำรองทุก User:{' '}
+                สำรอง:{' '}
                 <strong className="font-mono tabular-nums">
                   {parcelBackupSummary.totalParcelsInBackup.toLocaleString()}
-                </strong>{' '}
-                ชิ้น
+                </strong>
               </span>
             </span>
             {pendingWrites.length > 0 && (
-              <button
-                type="button"
-                onClick={() => void uploadStagedToFirebaseNow()}
-                disabled={isSyncing}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-100 text-amber-950 border border-amber-300 font-bold cursor-pointer disabled:opacity-50"
-              >
-                <UploadCloud className="w-3 h-3 text-amber-700 shrink-0" />
-                <span>อัปโหลด {pendingWrites.length}</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => void uploadStagedToFirebaseNow()}
+                  disabled={isSyncing}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-100 text-amber-950 border border-amber-300 font-bold cursor-pointer disabled:opacity-50"
+                >
+                  <UploadCloud className="w-3 h-3 text-amber-700 shrink-0" />
+                  <span>อัปโหลด {pendingWrites.length}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={exportLocalStoragePendingJson}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white text-slate-800 border border-slate-300 font-bold cursor-pointer"
+                >
+                  <Download className="w-3 h-3 text-indigo-600 shrink-0" />
+                  <span>ส่งออก</span>
+                </button>
+              </>
             )}
           </div>
 
@@ -666,38 +738,99 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
         </div>
       </header>
 
-      {/* แจ้งเตือนเมื่อโควตาการอ่านข้อมูล Firestore รายวันเต็ม */}
-      {quotaExceeded && (
+      {/* แจ้งเตือนเมื่อโควตา Firestore เต็ม หรือมีข้อมูลค้างใน localStorage พร้อมปุ่มส่งออกและอัปโหลดเข้า Firestore */}
+      {(quotaExceeded || pendingWrites.length > 0) && (
         <div className="no-print max-w-7xl w-full mx-auto px-4 md:px-8 pt-4">
           <div
             role="status"
-            className="px-4 py-3 rounded-xl border bg-amber-50 border-amber-300 text-amber-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-xs"
+            className={`px-4 py-3 rounded-xl border text-xs flex flex-col lg:flex-row lg:items-center justify-between gap-3 shadow-xs ${
+              quotaExceeded
+                ? 'bg-amber-50 border-amber-300 text-amber-950'
+                : 'bg-indigo-50 border-indigo-200 text-indigo-950'
+            }`}
           >
             <div className="flex items-start sm:items-center gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5 sm:mt-0" />
-              <div>
-                <span className="font-bold">โควตาการอ่านข้อมูล Firestore รายวัน (Free Tier) เต็มแล้ว: </span>
-                <span>
-                  โควตาจะรีเซ็ตในวันถัดไป (Spark Plan / Enterprise Edition){' '}
-                  <a
-                    href={FIRESTORE_PRICING_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline font-semibold hover:text-amber-700"
-                  >
-                    ข้อมูลโควตา
-                  </a>
-                </span>
+              <AlertTriangle
+                className={`w-4.5 h-4.5 shrink-0 mt-0.5 sm:mt-0 ${
+                  quotaExceeded ? 'text-amber-600' : 'text-indigo-600'
+                }`}
+              />
+              <div className="space-y-0.5">
+                {quotaExceeded ? (
+                  <>
+                    <div>
+                      <span className="font-bold">โควตา Firestore รายวัน (Free Tier) เต็มแล้ว: </span>
+                      <span>
+                        ระบบกำลังบันทึกข้อมูลใหม่ลง <strong className="font-mono">localStorage</strong> อัตโนมัติ (ค้างส่ง{' '}
+                        <strong className="font-mono">{pendingWrites.length.toLocaleString()}</strong> รายการ)
+                      </span>
+                    </div>
+                    <div className="text-[11px] opacity-90">
+                      คุณสามารถกด <strong>ส่งออก JSON / CSV</strong> เก็บไว้ หรือกด <strong>อัปโหลดเข้า Firestore</strong> เมื่อโควตารีเซ็ตในวันถัดไป ({' '}
+                      <a
+                        href={FIRESTORE_PRICING_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline font-semibold hover:text-amber-700"
+                      >
+                        ข้อมูลโควตา Spark Plan
+                      </a>
+                      )
+                    </div>
+                  </>
+                ) : (
+                  <div>
+                    <span className="font-bold">
+                      มีข้อมูลที่บันทึกไว้ใน localStorage จำนวน {pendingWrites.length.toLocaleString()} รายการ:{' '}
+                    </span>
+                    <span>พร้อมให้คุณกดส่งออกไฟล์ หรืออัปโหลดเข้าฐานข้อมูล Firestore ได้ทันที</span>
+                  </div>
+                )}
               </div>
             </div>
-            <a
-              href={FIRESTORE_UPGRADE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-[11px] text-center transition-colors"
-            >
-              อัปเกรดใน Firebase Console
-            </a>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={exportLocalStoragePendingJson}
+                className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-900 border border-slate-300 font-bold text-[11px] inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5 text-indigo-600" />
+                <span>ส่งออก JSON (localStorage)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={exportLocalStorageParcelsCsv}
+                className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-900 border border-slate-300 font-bold text-[11px] inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                <span>ส่งออก CSV</span>
+              </button>
+
+              {pendingWrites.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void uploadStagedToFirebaseNow()}
+                  disabled={isSyncing}
+                  className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                  <span>อัปโหลดเข้า Firestore ({pendingWrites.length})</span>
+                </button>
+              )}
+
+              {quotaExceeded && (
+                <a
+                  href={FIRESTORE_UPGRADE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-[11px] text-center transition-colors"
+                >
+                  อัปเกรด Firestore
+                </a>
+              )}
+            </div>
           </div>
         </div>
       )}

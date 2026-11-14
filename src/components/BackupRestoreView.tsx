@@ -42,6 +42,7 @@ export const BackupRestoreView: React.FC = () => {
     studentBackupStatus,
     parcelBackupSummary,
     firestoreConnectionStatus,
+    quotaExceeded,
     bulkImportStudents,
     bulkImportParcels,
     fullRestoreSystemBackup,
@@ -50,6 +51,8 @@ export const BackupRestoreView: React.FC = () => {
     uploadAllBackupParcelsToFirebaseNow,
     pullFromFirebaseToLocal,
     backupAllStudentsNow,
+    exportLocalStoragePendingJson,
+    exportLocalStorageParcelsCsv,
     isSyncing,
     syncProgress,
   } = useParcelSystem();
@@ -542,14 +545,29 @@ export const BackupRestoreView: React.FC = () => {
 
       {/* สถานะไฟล์สำรองรออัพโหลดในระบบ และกำหนดการอัปโหลดอัตโนมัติ 00:00 น. */}
       <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex flex-col gap-3.5">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
               <HardDrive className="w-5 h-5" />
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1 min-w-0 flex-1">
               <h2 className="text-sm font-extrabold text-slate-900 flex flex-wrap items-center gap-2">
-                <span>ระบบไฟล์สำรองก่อนอัปโหลด (Pre-Upload Local Staging & 00:00 Auto-Upload)</span>
+                <span>ระบบบันทึกตรง Firestore & ไฟล์สำรอง localStorage เมื่อ Quota เต็ม</span>
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-md border font-bold ${
+                    quotaExceeded
+                      ? 'bg-rose-50 text-rose-800 border-rose-300'
+                      : firestoreConnectionStatus === 'offline_fallback'
+                      ? 'bg-amber-50 text-amber-900 border-amber-300'
+                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  }`}
+                >
+                  {quotaExceeded
+                    ? 'Quota เต็ม · กำลังบันทึกลง localStorage'
+                    : firestoreConnectionStatus === 'offline_fallback'
+                    ? 'ออฟไลน์ · กำลังบันทึกลง localStorage'
+                    : 'Quota ปกติ · รับลง Firestore โดยตรง'}
+                </span>
                 <span
                   className={`text-[10px] font-mono px-2 py-0.5 rounded-md border font-bold ${
                     pendingWrites.length > 0
@@ -558,22 +576,37 @@ export const BackupRestoreView: React.FC = () => {
                   }`}
                 >
                   {pendingWrites.length > 0
-                    ? `รออัปโหลด ${pendingWrites.length} รายการ`
-                    : 'ไม่มีข้อมูลค้างส่ง (ไฟล์ถูกลบแล้ว)'}
+                    ? `ค้างส่งใน localStorage ${pendingWrites.length} รายการ`
+                    : 'ไม่มีข้อมูลค้างส่ง'}
                 </span>
               </h2>
               <p className="text-xs text-slate-600 leading-relaxed">
-                ทุกการเพิ่ม/แก้ไขข้อมูลจะถูกบันทึกลงไฟล์สำรอง{' '}
+                ระบบจะบันทึกข้อมูลลง Firestore โดยตรงทันที แต่หากโควตาเต็มจะแจ้งเตือนและบันทึกลง{' '}
                 <code className="px-1.5 py-0.5 bg-slate-100 text-slate-800 rounded font-mono text-[11px]">
-                  {localBackupStatus.stagingFilePath}
+                  localStorage ({localBackupStatus.stagingFilePath})
                 </code>{' '}
-                ก่อน แล้วระบบจะอัปโหลดขึ้น Firebase อัตโนมัติทุกวันเวลา <strong className="text-indigo-700">00:00 น.</strong>{' '}
-                พร้อมลบไฟล์ข้อมูลสำรองรออัพโหลดทันทีเมื่ออัปโหลดสำเร็จ และใช้ข้อมูลสำรองในระบบในการค้นหาก่อนเสมอเพื่อประหยัดโควตา
+                อัตโนมัติ เพื่อให้ผู้ใช้งานส่งออกไฟล์หรืออัปโหลดเข้า Firestore ได้ทันที (และมีรอบอัปโหลดอัตโนมัติ 00:00 น.)
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 pt-2.5 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={exportLocalStoragePendingJson}
+              className="px-3.5 py-2.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-indigo-600" />
+              <span>ส่งออก JSON (localStorage)</span>
+            </button>
+            <button
+              type="button"
+              onClick={exportLocalStorageParcelsCsv}
+              className="px-3.5 py-2.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+              <span>ส่งออก CSV</span>
+            </button>
             <button
               type="button"
               onClick={() => void uploadStagedToFirebaseNow()}
@@ -581,7 +614,7 @@ export const BackupRestoreView: React.FC = () => {
               className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
             >
               <UploadCloud className="w-4 h-4" />
-              <span>อัปโหลดขึ้น Firebase ทันที ({pendingWrites.length})</span>
+              <span>อัปโหลดเข้า Firestore ({pendingWrites.length})</span>
             </button>
             <button
               type="button"

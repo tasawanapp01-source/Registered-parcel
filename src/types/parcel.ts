@@ -249,6 +249,19 @@ export interface LocalBackupStatus {
 
 export type FirestoreConnectionStatus = 'connected' | 'offline_fallback' | 'quota_exceeded';
 
+export type WriteTargetMode =
+  | 'firestore_direct'
+  | 'local_storage_quota_full'
+  | 'local_storage_offline';
+
+export interface FirestoreQuotaStatus {
+  available: boolean;
+  quotaExceeded: boolean;
+  connectionFailed: boolean;
+  checkedAt: string;
+  reason?: string;
+}
+
 export interface StudentBackupStatus {
   count: number;
   updatedAt: string | null;

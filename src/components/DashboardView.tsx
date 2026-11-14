@@ -29,6 +29,8 @@ import {
   X,
   Database,
   UploadCloud,
+  Download,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { useParcelSystem } from '../context/ParcelSystemContext';
 import {
@@ -64,10 +66,14 @@ export const DashboardView: React.FC = () => {
     currentMember,
     parcelBackupSummary,
     pendingWrites,
+    quotaExceeded,
+    firestoreConnectionStatus,
     isSyncing,
     uploadStagedToFirebaseNow,
     stageAllBackupParcelsForUpload,
     uploadAllBackupParcelsToFirebaseNow,
+    exportLocalStoragePendingJson,
+    exportLocalStorageParcelsCsv,
   } = useParcelSystem();
 
   const isAdmin = currentMember?.role === 'ผู้ดูแลระบบ';
@@ -384,27 +390,59 @@ export const DashboardView: React.FC = () => {
 
       {/* สรุปยอดรับเข้าพัสดุรวมทุก User ในฐานข้อมูลสำรอง & สถานะพร้อมอัปโหลด */}
       <section className="bg-white border border-indigo-200 rounded-2xl p-6 space-y-5 shadow-xs">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+        <div className="flex flex-col gap-3.5 border-b border-slate-100 pb-4">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
               <Database className="w-5 h-5" />
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-base font-bold text-slate-900">
-                  สรุปยอดรับเข้าพัสดุรวมทุก User ในฐานข้อมูลสำรอง & สถานะพร้อมอัปโหลด
+                  สถานะการบันทึก (Firestore / localStorage) & สรุปยอดรับเข้าพัสดุรวมทุก User
                 </h2>
+                <span
+                  className={`text-[11px] font-bold px-2 py-0.5 rounded-md border ${
+                    quotaExceeded
+                      ? 'bg-rose-50 text-rose-800 border-rose-300'
+                      : firestoreConnectionStatus === 'offline_fallback'
+                      ? 'bg-amber-50 text-amber-900 border-amber-300'
+                      : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  }`}
+                >
+                  {quotaExceeded
+                    ? 'Quota เต็ม · บันทึกลง localStorage'
+                    : firestoreConnectionStatus === 'offline_fallback'
+                    ? 'ออฟไลน์ · บันทึกลง localStorage'
+                    : 'Quota ปกติ · รับลง Firestore โดยตรง'}
+                </span>
                 <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 font-semibold">
                   {parcelBackupSummary.backupFilePath}
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                รวมรายการรับเข้าพัสดุจากผู้ใช้งานทุกคน ({parcelBackupSummary.byUser.length} User) ในฐานข้อมูลสำรองกลางของระบบ พร้อมส่งขึ้น Firebase
+                บันทึกข้อมูลลง Firestore โดยตรงทันที / หาก Quota เต็มจะแจ้งเตือนและบันทึกลง localStorage พร้อมส่งออกหรืออัปโหลดภายหลัง ({parcelBackupSummary.byUser.length} User)
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 pt-2.5 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={exportLocalStoragePendingJson}
+              className="min-h-[40px] px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+              <span>ส่งออก JSON (localStorage)</span>
+            </button>
+            <button
+              type="button"
+              onClick={exportLocalStorageParcelsCsv}
+              className="min-h-[40px] px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>ส่งออก CSV</span>
+            </button>
+
             {pendingWrites.length > 0 && (
               <button
                 type="button"
@@ -413,7 +451,7 @@ export const DashboardView: React.FC = () => {
                 className="min-h-[40px] px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
               >
                 <UploadCloud className="w-4 h-4 shrink-0" />
-                <span>อัปโหลดคิวรอส่งขึ้น Firebase ({pendingWrites.length})</span>
+                <span>อัปโหลดจาก localStorage เข้า Firestore ({pendingWrites.length})</span>
               </button>
             )}
 
@@ -440,7 +478,7 @@ export const DashboardView: React.FC = () => {
               >
                 <UploadCloud className="w-4 h-4 shrink-0" />
                 <span>
-                  อัปโหลดพัสดุทั้งหมดขึ้น Firebase ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น)
+                  อัปโหลดทั้งหมดเข้า Firestore ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น)
                 </span>
               </button>
             )}

@@ -30,6 +30,8 @@ import {
   UploadCloud,
   Clock,
   Users,
+  Download,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { useParcelSystem } from '../context/ParcelSystemContext';
 import { BarcodeCameraScanner, decodeBarcodeFromImageFile } from './BarcodeCameraScanner';
@@ -181,9 +183,13 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     updateParcelDetails,
     parcelBackupSummary,
     pendingWrites,
+    quotaExceeded,
+    firestoreConnectionStatus,
     uploadStagedToFirebaseNow,
     stageAllBackupParcelsForUpload,
     uploadAllBackupParcelsToFirebaseNow,
+    exportLocalStoragePendingJson,
+    exportLocalStorageParcelsCsv,
     isSyncing,
   } = useParcelSystem();
 
@@ -1159,7 +1165,9 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     });
 
     setSaveSuccessMessage(
-      `บันทึกลงทะเบียนพัสดุสำเร็จ: ${savedParcel.trackingNumber} (${savedParcel.studentFullName || 'ไม่ทราบเจ้าของ'}) หอพัก: ${savedParcel.dormitory || '-'}`
+      savedParcel.writeMode === 'firestore_direct'
+        ? `บันทึกลงฐานข้อมูล Firestore โดยตรงสำเร็จ: ${savedParcel.trackingNumber} (${savedParcel.studentFullName || 'ไม่ทราบเจ้าของ'}) หอพัก: ${savedParcel.dormitory || '-'}`
+        : `Quota เต็ม — บันทึกลง localStorage สำเร็จ: ${savedParcel.trackingNumber} (${savedParcel.studentFullName || 'ไม่ทราบเจ้าของ'}) · พร้อมส่งออกหรืออัปโหลดเข้า Firestore`
     );
 
     // เมื่อบันทึกแล้วให้ล้างฟอร์มทั้งหมด และ disable ปุ่มบันทึกลงทะเบียนพัสดุทันที
@@ -1449,27 +1457,61 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
 
       {/* สรุปยอดรับเข้าพัสดุทั้งหมดรวมทุก User ในฐานข้อมูลสำรอง & พร้อมอัปโหลดขึ้น Firebase */}
       <section className="no-print bg-white border border-indigo-200/90 rounded-2xl p-4 md:p-5 shadow-xs space-y-3.5">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        {/* บรรทัดบนสุด: หัวข้อ สถานะ Quota / localStorage, ไฟล์สำรอง และคำอธิบาย */}
+        <div className="flex flex-col gap-3">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
               <Database className="w-5 h-5" />
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-sm font-extrabold text-slate-900">
-                  ยอดรับเข้าพัสดุทั้งหมดในฐานข้อมูลสำรอง (รวมทุก User) & พร้อมอัปโหลดขึ้น Firebase
+                  สถานะการบันทึกพัสดุ (Firestore / localStorage) & ยอดรับเข้าสำรองรวมทุก User
                 </h2>
+                <span
+                  className={`text-[10.5px] font-bold px-2 py-0.5 rounded-md border ${
+                    quotaExceeded
+                      ? 'bg-rose-50 text-rose-800 border-rose-300'
+                      : firestoreConnectionStatus === 'offline_fallback'
+                      ? 'bg-amber-50 text-amber-900 border-amber-300'
+                      : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  }`}
+                >
+                  {quotaExceeded
+                    ? 'Quota เต็ม · บันทึกลง localStorage'
+                    : firestoreConnectionStatus === 'offline_fallback'
+                    ? 'ออฟไลน์ · บันทึกลง localStorage'
+                    : 'Quota ปกติ · รับลง Firestore โดยตรง'}
+                </span>
                 <span className="text-[10.5px] font-mono px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">
                   {parcelBackupSummary.backupFilePath}
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                รวมยอดพัสดุที่ลงทะเบียนโดยผู้ใช้ทุกคนในระบบสำรองกลาง และพร้อมอัปโหลดขึ้น Firebase ทันทีหรือตามกำหนดการอัตโนมัติ 00:00 น.
+                บันทึกข้อมูลลง Firestore โดยตรงทันที / หาก Quota เต็มจะแจ้งเตือนและบันทึกลง localStorage เพื่อให้ส่งออกหรืออัปโหลดเข้า Firestore ภายหลัง
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {/* แถวที่ 2: ปุ่มต่างๆ สำหรับส่งออกและอัปโหลดเข้า Firestore */}
+          <div className="flex flex-wrap items-center gap-2 pt-2.5 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={exportLocalStoragePendingJson}
+              className="min-h-[38px] px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+              <span>ส่งออก JSON</span>
+            </button>
+            <button
+              type="button"
+              onClick={exportLocalStorageParcelsCsv}
+              className="min-h-[38px] px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>ส่งออก CSV</span>
+            </button>
+
             {pendingWrites.length > 0 && (
               <button
                 type="button"
@@ -1478,7 +1520,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                 className="min-h-[38px] px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 <UploadCloud className="w-4 h-4 shrink-0" />
-                <span>อัปโหลดคิวรอส่งขึ้น Firebase ({pendingWrites.length} รายการ)</span>
+                <span>อัปโหลดจาก localStorage เข้า Firestore ({pendingWrites.length})</span>
               </button>
             )}
 
@@ -1505,7 +1547,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
               >
                 <UploadCloud className="w-4 h-4 shrink-0" />
                 <span>
-                  อัปโหลดพัสดุทั้งหมดขึ้น Firebase ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น)
+                  อัปโหลดทั้งหมดเข้า Firestore ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น)
                 </span>
               </button>
             )}
@@ -1593,15 +1635,25 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       </section>
 
       {saveSuccessMessage && (
-        <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-xl text-xs font-semibold text-emerald-900 flex items-center justify-between gap-3 shadow-xs">
+        <div
+          className={`p-4 border rounded-xl text-xs font-semibold flex items-center justify-between gap-3 shadow-xs ${
+            saveSuccessMessage.includes('localStorage') || saveSuccessMessage.includes('Quota เต็ม')
+              ? 'bg-amber-50 border-amber-300 text-amber-950'
+              : 'bg-emerald-50 border-emerald-300 text-emerald-900'
+          }`}
+        >
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            {saveSuccessMessage.includes('localStorage') || saveSuccessMessage.includes('Quota เต็ม') ? (
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            )}
             <span>{saveSuccessMessage}</span>
           </div>
           <button
             type="button"
             onClick={() => setSaveSuccessMessage(null)}
-            className="text-emerald-700 hover:text-emerald-950 p-1"
+            className="opacity-75 hover:opacity-100 p-1 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
