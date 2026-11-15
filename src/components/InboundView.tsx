@@ -27,8 +27,6 @@ import {
   Dices,
   Sparkles,
   Database,
-  UploadCloud,
-  Clock,
   Users,
   Download,
   FileSpreadsheet,
@@ -174,22 +172,18 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     addInboundParcel,
     updateParcelStatus,
     upsertSingleStudent,
-    pullFromFirebaseToLocal,
+    refreshFromSupabase,
     getStudentParcelCounts,
     openWeeklyWarningPopup,
     parcelRateLimitConfig,
     user,
     currentMember,
     updateParcelDetails,
-    parcelBackupSummary,
-    pendingWrites,
-    quotaExceeded,
-    firestoreConnectionStatus,
-    uploadStagedToFirebaseNow,
-    stageAllBackupParcelsForUpload,
-    uploadAllBackupParcelsToFirebaseNow,
-    exportLocalStoragePendingJson,
-    exportLocalStorageParcelsCsv,
+    supabaseParcelSummary,
+    supabaseConnectionStatus,
+    supabaseConnectionDetails,
+    exportParcelsJson,
+    exportParcelsCsv,
     isSyncing,
   } = useParcelSystem();
 
@@ -305,9 +299,16 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
   const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState<boolean>(false);
 
   const step1SectionRef = useRef<HTMLElement | null>(null);
+  const step2SectionRef = useRef<HTMLElement | null>(null);
+  const step3SectionRef = useRef<HTMLElement | null>(null);
+  const step4SectionRef = useRef<HTMLElement | null>(null);
+  const dormGuideSectionRef = useRef<HTMLElement | null>(null);
   const recentParcelsSectionRef = useRef<HTMLElement | null>(null);
   const dismissedDuplicateTrackingRef = useRef<string>('');
-  const [isAtRecentSection, setIsAtRecentSection] = useState<boolean>(false);
+  const [isSupabaseSummaryOpen, setIsSupabaseSummaryOpen] = useState<boolean>(false);
+  const [activeSectionId, setActiveSectionId] = useState<
+    'step1' | 'step2' | 'step3' | 'step4' | 'dorm' | 'recent'
+  >('step1');
   const [isScrolledDown, setIsScrolledDown] = useState<boolean>(false);
 
   const handleOpenEditModal = (p: Parcel) => {
@@ -521,7 +522,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         return;
       }
 
-      // ไม่พบในข้อมูลสำรองของระบบ -> ค้นหาแบบเจาะจงจาก Firebase (1 Read)
+      // ไม่พบในหน่วยความจำ -> ค้นหาแบบเจาะจงจาก Supabase
       const cloudRes = await lookupStudentWithCloudFallback(query);
       if (cloudRes.student) {
         lastAutoPopulatedCodeRef.current = cloudRes.student.studentCode;
@@ -534,8 +535,8 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         type: 'warning',
         message:
           students.length === 0
-            ? 'ไม่พบในข้อมูลสำรองและ Firebase คุณสามารถกด "แก้ไข / กรอกข้อมูลเอง" หรือนำเข้าข้อมูลนักเรียน'
-            : `ไม่พบข้อมูลนักเรียนจากรหัส "${query}" ทั้งในข้อมูลสำรองและ Firebase`,
+            ? 'ไม่พบในข้อมูลปัจจุบันและ Supabase คุณสามารถกด "แก้ไข / กรอกข้อมูลเอง" หรือนำเข้าข้อมูลนักเรียน'
+            : `ไม่พบข้อมูลนักเรียนจากรหัส "${query}" ทั้งในระบบและ Supabase`,
       });
       return;
     }
@@ -565,7 +566,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       type: 'warning',
       message:
         students.length === 0
-          ? 'ยังไม่มีรายชื่อนักเรียนในข้อมูลสำรอง คุณสามารถกด "แก้ไข / กรอกข้อมูลเอง" หรือนำเข้าข้อมูลนักเรียน'
+          ? 'ยังไม่มีรายชื่อนักเรียนในระบบ คุณสามารถกด "แก้ไข / กรอกข้อมูลเอง" หรือนำเข้าข้อมูลนักเรียน'
           : `ไม่พบข้อมูลนักเรียนจากคำค้น "${query}" สามารถกด "แก้ไข / กรอกข้อมูลเอง" ด้านล่างได้`,
     });
   };
@@ -1164,10 +1165,16 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       },
     });
 
+    if (savedParcel.writeMode !== 'supabase_direct') {
+      setSaveSuccessMessage(null);
+      setFormError(
+        `ไม่สามารถบันทึกพัสดุ "${savedParcel.trackingNumber}" ลงฐานข้อมูล Supabase ได้ (ไม่มีการบันทึกลง localStorage) กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตหรือโครงสร้างตาราง Supabase แล้วกดบันทึกใหม่อีกครั้ง`
+      );
+      return;
+    }
+
     setSaveSuccessMessage(
-      savedParcel.writeMode === 'firestore_direct'
-        ? `บันทึกลงฐานข้อมูล Firestore โดยตรงสำเร็จ: ${savedParcel.trackingNumber} (${savedParcel.studentFullName || 'ไม่ทราบเจ้าของ'}) หอพัก: ${savedParcel.dormitory || '-'}`
-        : `Quota เต็ม — บันทึกลง localStorage สำเร็จ: ${savedParcel.trackingNumber} (${savedParcel.studentFullName || 'ไม่ทราบเจ้าของ'}) · พร้อมส่งออกหรืออัปโหลดเข้า Firestore`
+      `บันทึกลงฐานข้อมูล Supabase โดยตรงสำเร็จ: ${savedParcel.trackingNumber} (${savedParcel.studentFullName || 'ไม่ทราบเจ้าของ'}) หอพัก: ${savedParcel.dormitory || '-'}`
     );
 
     // เมื่อบันทึกแล้วให้ล้างฟอร์มทั้งหมด และ disable ปุ่มบันทึกลงทะเบียนพัสดุทันที
@@ -1350,7 +1357,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     return allFilteredRecentParcels.slice(startIdx, startIdx + effectivePageSize);
   }, [allFilteredRecentParcels, currentRecentPage, effectivePageSize, recentPageSize]);
 
-  // ติดตามตำแหน่งการเลื่อนหน้าจอเพื่อให้ปุ่มด่วนเน้นสถานะที่เหมาะสม
+  // ติดตามตำแหน่งการเลื่อนหน้าจอเพื่อให้ไอคอนนำทางหัวข้อเน้นสถานะที่เหมาะสม
   useEffect(() => {
     const handleScroll = () => {
       setIsScrolledDown(window.scrollY > 180);
@@ -1361,27 +1368,119 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
   }, []);
 
   useEffect(() => {
-    const target = recentParcelsSectionRef.current;
-    if (!target || typeof IntersectionObserver === 'undefined') return;
+    if (typeof IntersectionObserver === 'undefined') return;
+    const sectionEntries: Array<{
+      id: 'step1' | 'step2' | 'step3' | 'step4' | 'dorm' | 'recent';
+      el: HTMLElement | null;
+    }> = [
+      { id: 'step1', el: step1SectionRef.current },
+      { id: 'step2', el: step2SectionRef.current },
+      { id: 'step3', el: step3SectionRef.current },
+      { id: 'step4', el: step4SectionRef.current },
+      { id: 'dorm', el: dormGuideSectionRef.current },
+      { id: 'recent', el: recentParcelsSectionRef.current },
+    ];
+    const validTargets = sectionEntries.filter(
+      (s): s is { id: 'step1' | 'step2' | 'step3' | 'step4' | 'dorm' | 'recent'; el: HTMLElement } =>
+        Boolean(s.el)
+    );
+    if (validTargets.length === 0) return;
+
+    const visibilityMap = new Map<string, boolean>();
     const observer = new IntersectionObserver(
       (entries) => {
-        const entry = entries[0];
-        if (entry) {
-          setIsAtRecentSection(entry.isIntersecting);
+        for (const entry of entries) {
+          const secId = entry.target.getAttribute('data-section-id');
+          if (secId) {
+            visibilityMap.set(secId, entry.isIntersecting);
+          }
+        }
+        const firstVisible = validTargets.find((s) => visibilityMap.get(s.id));
+        if (firstVisible) {
+          setActiveSectionId(firstVisible.id);
         }
       },
-      { threshold: 0.12, rootMargin: '-80px 0px -20% 0px' }
+      { threshold: 0.15, rootMargin: '-96px 0px -35% 0px' }
     );
-    observer.observe(target);
+
+    for (const s of validTargets) {
+      observer.observe(s.el);
+    }
     return () => observer.disconnect();
   }, []);
 
+  const inboundSections = useMemo(
+    () => [
+      {
+        id: 'step1' as const,
+        title: '1. สแกน / กรอกเลขพัสดุ',
+        ref: step1SectionRef,
+      },
+      {
+        id: 'step2' as const,
+        title: '2. ข้อมูลนักเรียนผู้รับ',
+        ref: step2SectionRef,
+      },
+      {
+        id: 'step3' as const,
+        title: '3. ประเภทสิ่งของ',
+        ref: step3SectionRef,
+      },
+      {
+        id: 'step4' as const,
+        title: '4. สถานะคัดแยก & บันทึก',
+        ref: step4SectionRef,
+      },
+      {
+        id: 'dorm' as const,
+        title: 'ผังสีตะกร้าหอพัก',
+        ref: dormGuideSectionRef,
+      },
+      {
+        id: 'recent' as const,
+        title: `รายการรับเข้าล่าสุด (${allFilteredRecentParcels.length})`,
+        ref: recentParcelsSectionRef,
+      },
+    ],
+    [allFilteredRecentParcels.length]
+  );
+
+  const scrollToSection = useCallback(
+    (sectionId: 'step1' | 'step2' | 'step3' | 'step4' | 'dorm' | 'recent') => {
+      const target = inboundSections.find((s) => s.id === sectionId);
+      if (!target?.ref.current) return;
+      target.ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setActiveSectionId(sectionId);
+    },
+    [inboundSections]
+  );
+
+  const handleStepSection = useCallback(
+    (direction: 'prev' | 'next') => {
+      const currentIndex = inboundSections.findIndex((s) => s.id === activeSectionId);
+      const baseIndex = currentIndex >= 0 ? currentIndex : 0;
+      if (direction === 'prev' && baseIndex === 0) {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      const nextIndex =
+        direction === 'prev'
+          ? Math.max(0, baseIndex - 1)
+          : Math.min(inboundSections.length - 1, baseIndex + 1);
+      const target = inboundSections[nextIndex];
+      if (target) {
+        scrollToSection(target.id);
+      }
+    },
+    [inboundSections, activeSectionId, scrollToSection]
+  );
+
   const handleScrollToRecentParcels = useCallback(() => {
-    recentParcelsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, []);
+    scrollToSection('recent');
+  }, [scrollToSection]);
 
   const handleScrollToScan = useCallback(() => {
-    step1SectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    scrollToSection('step1');
     setTimeout(() => {
       if (trackingInputMode === 'six_digits' && courier !== 'ผู้ปกครองฝากส่ง') {
         sixDigitsInputRef.current?.focus({ preventScroll: true });
@@ -1391,7 +1490,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         trackingInputRef.current?.select();
       }
     }, 320);
-  }, [trackingInputMode, courier]);
+  }, [trackingInputMode, courier, scrollToSection]);
 
   const lastHandledQuickActionRef = useRef<number>(0);
 
@@ -1425,7 +1524,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
   }, [quickAction]);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       {/* Hidden container สำหรับสแกนบาร์โค้ดจากไฟล์รูปภาพ */}
       <div id="inbound-barcode-file-reader" className="hidden" />
 
@@ -1440,24 +1539,78 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
           </h1>
         </div>
 
-        <button
-          type="button"
-          onClick={handleScrollToRecentParcels}
-          title="เลื่อนลงไปดูรายการพัสดุที่รับเข้าล่าสุดทันที"
-          className="no-print self-start md:self-auto min-h-[42px] px-4 py-2 bg-white hover:bg-indigo-50 active:scale-98 text-slate-800 hover:text-indigo-900 border-2 border-slate-200 hover:border-indigo-300 rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-2 cursor-pointer shrink-0"
-        >
-          <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
-          <span>ดูรายการพัสดุที่รับเข้าล่าสุด</span>
-          <span className="px-1.5 py-0.5 rounded-md bg-indigo-100 text-indigo-800 font-mono text-[11px] font-extrabold tabular-nums">
-            {allFilteredRecentParcels.length}
-          </span>
-          <ArrowDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-        </button>
+        <div className="no-print flex flex-wrap items-center gap-2 self-start md:self-auto shrink-0">
+          {/* ไอคอนเปิด/ปิดสถานะการบันทึกข้อมูล Supabase โดยตรง & ยอดรับเข้ารวมทุก User */}
+          <button
+            type="button"
+            onClick={() => setIsSupabaseSummaryOpen((prev) => !prev)}
+            aria-expanded={isSupabaseSummaryOpen}
+            aria-label={
+              isSupabaseSummaryOpen
+                ? 'ซ่อนสถานะการบันทึกข้อมูล Supabase โดยตรง และยอดรับเข้ารวมทุก User'
+                : 'ดูสถานะการบันทึกข้อมูล Supabase โดยตรง และยอดรับเข้ารวมทุก User'
+            }
+            title="คลิกเพื่อเปิด/ปิดสถานะการบันทึกข้อมูล Supabase โดยตรง & ยอดรับเข้ารวมทุก User"
+            className={`min-h-[42px] px-3 py-2 border-2 rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-2 cursor-pointer shrink-0 ${
+              isSupabaseSummaryOpen
+                ? 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600 ring-2 ring-indigo-500/25'
+                : 'bg-white hover:bg-indigo-50 text-slate-800 hover:text-indigo-900 border-slate-200 hover:border-indigo-300'
+            }`}
+          >
+            <span className="relative flex items-center justify-center">
+              <Database
+                className={`w-4 h-4 shrink-0 ${
+                  isSupabaseSummaryOpen ? 'text-white' : 'text-indigo-600'
+                }`}
+              />
+              <span
+                className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full ring-2 ${
+                  isSupabaseSummaryOpen ? 'ring-indigo-600' : 'ring-white'
+                } ${
+                  supabaseConnectionStatus === 'schema_missing'
+                    ? 'bg-amber-400'
+                    : supabaseConnectionStatus === 'disconnected'
+                    ? 'bg-rose-500'
+                    : 'bg-emerald-500'
+                }`}
+              />
+            </span>
+            <span className="hidden sm:inline">สถานะ Supabase</span>
+            <span
+              className={`px-1.5 py-0.5 rounded-md font-mono text-[11px] font-extrabold tabular-nums ${
+                isSupabaseSummaryOpen
+                  ? 'bg-white/20 text-white'
+                  : 'bg-indigo-100 text-indigo-800'
+              }`}
+            >
+              {supabaseParcelSummary.totalParcels.toLocaleString()}
+            </span>
+            <ChevronDown
+              className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${
+                isSupabaseSummaryOpen ? 'rotate-180 text-white' : 'text-slate-500'
+              }`}
+            />
+          </button>
+
+          <button
+            type="button"
+            onClick={handleScrollToRecentParcels}
+            title="เลื่อนลงไปดูรายการพัสดุที่รับเข้าล่าสุดทันที"
+            className="min-h-[42px] px-4 py-2 bg-white hover:bg-indigo-50 active:scale-98 text-slate-800 hover:text-indigo-900 border-2 border-slate-200 hover:border-indigo-300 rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-2 cursor-pointer shrink-0"
+          >
+            <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
+            <span>ดูรายการพัสดุที่รับเข้าล่าสุด</span>
+            <span className="px-1.5 py-0.5 rounded-md bg-indigo-100 text-indigo-800 font-mono text-[11px] font-extrabold tabular-nums">
+              {allFilteredRecentParcels.length}
+            </span>
+            <ArrowDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+          </button>
+        </div>
       </div>
 
-      {/* สรุปยอดรับเข้าพัสดุทั้งหมดรวมทุก User ในฐานข้อมูลสำรอง & พร้อมอัปโหลดขึ้น Firebase */}
-      <section className="no-print bg-white border border-indigo-200/90 rounded-2xl p-4 md:p-5 shadow-xs space-y-3.5">
-        {/* บรรทัดบนสุด: หัวข้อ สถานะ Quota / localStorage, ไฟล์สำรอง และคำอธิบาย */}
+      {/* สรุปยอดรับเข้าพัสดุทั้งหมดรวมทุก User ในฐานข้อมูล Supabase (ซ่อนไว้และเปิดเมื่อคลิกไอคอน) */}
+      {isSupabaseSummaryOpen && (
+      <section className="no-print bg-white border border-indigo-200/90 rounded-2xl p-4 md:p-5 shadow-xs space-y-3.5 animate-in fade-in duration-150">
         <div className="flex flex-col gap-3">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
@@ -1466,38 +1619,45 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-sm font-extrabold text-slate-900">
-                  สถานะการบันทึกพัสดุ (Firestore / localStorage) & ยอดรับเข้าสำรองรวมทุก User
+                  สถานะการบันทึกข้อมูล Supabase โดยตรง & ยอดรับเข้ารวมทุก User
                 </h2>
                 <span
                   className={`text-[10.5px] font-bold px-2 py-0.5 rounded-md border ${
-                    quotaExceeded
-                      ? 'bg-rose-50 text-rose-800 border-rose-300'
-                      : firestoreConnectionStatus === 'offline_fallback'
+                    supabaseConnectionStatus === 'schema_missing'
                       ? 'bg-amber-50 text-amber-900 border-amber-300'
+                      : supabaseConnectionStatus === 'disconnected'
+                      ? 'bg-rose-50 text-rose-800 border-rose-300'
                       : 'bg-emerald-50 text-emerald-800 border-emerald-200'
                   }`}
                 >
-                  {quotaExceeded
-                    ? 'Quota เต็ม · บันทึกลง localStorage'
-                    : firestoreConnectionStatus === 'offline_fallback'
-                    ? 'ออฟไลน์ · บันทึกลง localStorage'
-                    : 'Quota ปกติ · รับลง Firestore โดยตรง'}
-                </span>
-                <span className="text-[10.5px] font-mono px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">
-                  {parcelBackupSummary.backupFilePath}
+                  {supabaseConnectionStatus === 'schema_missing'
+                    ? 'ยังไม่ได้สร้างตารางใน Supabase'
+                    : supabaseConnectionStatus === 'disconnected'
+                    ? 'ไม่สามารถเชื่อมต่อ Supabase ได้'
+                    : supabaseConnectionDetails?.connected
+                    ? `Supabase ออนไลน์ · ${supabaseConnectionDetails.projectRef} (${supabaseConnectionDetails.latencyMs} ms)`
+                    : 'Supabase ออนไลน์ · บันทึกตรงเข้าฐานข้อมูล'}
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                บันทึกข้อมูลลง Firestore โดยตรงทันที / หาก Quota เต็มจะแจ้งเตือนและบันทึกลง localStorage เพื่อให้ส่งออกหรืออัปโหลดเข้า Firestore ภายหลัง
+                ข้อมูลพัสดุทั้งหมดอ่านและบันทึกลงฐานข้อมูล Supabase โดยตรงแบบเรียลไทม์ (ไม่บันทึกข้อมูลลง localStorage)
               </p>
             </div>
+            <button
+              type="button"
+              onClick={() => setIsSupabaseSummaryOpen(false)}
+              aria-label="ซ่อนหน้าต่างสถานะ Supabase"
+              title="ซ่อนหน้าต่างสถานะ Supabase"
+              className="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
-          {/* แถวที่ 2: ปุ่มต่างๆ สำหรับส่งออกและอัปโหลดเข้า Firestore */}
           <div className="flex flex-wrap items-center gap-2 pt-2.5 border-t border-slate-100">
             <button
               type="button"
-              onClick={exportLocalStoragePendingJson}
+              onClick={exportParcelsJson}
               className="min-h-[38px] px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
@@ -1505,63 +1665,32 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
             </button>
             <button
               type="button"
-              onClick={exportLocalStorageParcelsCsv}
+              onClick={exportParcelsCsv}
               className="min-h-[38px] px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
               <span>ส่งออก CSV</span>
             </button>
-
-            {pendingWrites.length > 0 && (
-              <button
-                type="button"
-                onClick={() => void uploadStagedToFirebaseNow()}
-                disabled={isSyncing}
-                className="min-h-[38px] px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              >
-                <UploadCloud className="w-4 h-4 shrink-0" />
-                <span>อัปโหลดจาก localStorage เข้า Firestore ({pendingWrites.length})</span>
-              </button>
-            )}
-
-            {parcelBackupSummary.unstagedBackupParcelsCount > 0 && (
-              <button
-                type="button"
-                onClick={() => void stageAllBackupParcelsForUpload()}
-                disabled={isSyncing}
-                className="min-h-[38px] px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              >
-                <Clock className="w-4 h-4 text-amber-700 shrink-0" />
-                <span>
-                  เตรียมพัสดุสำรองพร้อมอัปโหลด (+{parcelBackupSummary.unstagedBackupParcelsCount})
-                </span>
-              </button>
-            )}
-
-            {parcelBackupSummary.totalParcelsInBackup > 0 && (
-              <button
-                type="button"
-                onClick={() => void uploadAllBackupParcelsToFirebaseNow()}
-                disabled={isSyncing}
-                className="min-h-[38px] px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              >
-                <UploadCloud className="w-4 h-4 shrink-0" />
-                <span>
-                  อัปโหลดทั้งหมดเข้า Firestore ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น)
-                </span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => void refreshFromSupabase()}
+              disabled={isSyncing}
+              className="min-h-[38px] px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>รีเฟรชข้อมูลจาก Supabase</span>
+            </button>
           </div>
         </div>
 
         {/* ตัวเลขสรุปรวม */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
           <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3">
             <span className="text-[11px] text-indigo-800 font-semibold block">
-              ยอดรับเข้าสำรองรวมทุก User
+              ยอดรับเข้าทั้งหมดใน Supabase (ทุก User)
             </span>
             <div className="text-xl font-mono font-black text-indigo-950 tabular-nums mt-0.5">
-              {parcelBackupSummary.totalParcelsInBackup.toLocaleString()}{' '}
+              {supabaseParcelSummary.totalParcels.toLocaleString()}{' '}
               <span className="text-xs font-semibold text-indigo-700">ชิ้น</span>
             </div>
           </div>
@@ -1571,43 +1700,31 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
               รับเข้าวันนี้รวมทุก User
             </span>
             <div className="text-xl font-mono font-black text-emerald-900 tabular-nums mt-0.5">
-              {parcelBackupSummary.todayParcelsInBackup.toLocaleString()}{' '}
+              {supabaseParcelSummary.todayParcels.toLocaleString()}{' '}
               <span className="text-xs font-semibold text-emerald-700">ชิ้น</span>
-            </div>
-          </div>
-
-          <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3">
-            <span className="text-[11px] text-amber-900 font-semibold block">
-              พร้อมอัปโหลดขึ้น Firebase
-            </span>
-            <div className="text-xl font-mono font-black text-amber-950 tabular-nums mt-0.5">
-              {parcelBackupSummary.totalPendingItemsToUpload.toLocaleString()}{' '}
-              <span className="text-xs font-semibold text-amber-800">
-                รายการ ({parcelBackupSummary.pendingParcelsToUpload.toLocaleString()} พัสดุ)
-              </span>
             </div>
           </div>
 
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
             <span className="text-[11px] text-slate-600 font-semibold block">
-              จำนวนผู้บันทึกในฐานข้อมูลสำรอง
+              จำนวนผู้บันทึกในระบบ
             </span>
             <div className="text-xl font-mono font-black text-slate-900 tabular-nums mt-0.5">
-              {parcelBackupSummary.byUser.length.toLocaleString()}{' '}
+              {supabaseParcelSummary.byUser.length.toLocaleString()}{' '}
               <span className="text-xs font-semibold text-slate-600">User</span>
             </div>
           </div>
         </div>
 
         {/* รายละเอียดแยกตาม User */}
-        {parcelBackupSummary.byUser.length > 0 && (
+        {supabaseParcelSummary.byUser.length > 0 && (
           <div className="pt-2 border-t border-slate-100">
             <div className="text-[11px] font-bold text-slate-600 mb-2 flex items-center gap-1.5">
               <Users className="w-3.5 h-3.5 text-indigo-600" />
-              <span>ยอดรับเข้าในฐานข้อมูลสำรองแยกตามผู้ใช้งาน (User Breakdown):</span>
+              <span>ยอดรับเข้าใน Supabase แยกตามผู้ใช้งาน (User Breakdown):</span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {parcelBackupSummary.byUser.map((u) => (
+              {supabaseParcelSummary.byUser.map((u) => (
                 <div
                   key={u.userKey}
                   className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs"
@@ -1622,28 +1739,24 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                   <span className="text-[11px] font-mono text-emerald-700 tabular-nums">
                     (วันนี้ {u.todayParcels.toLocaleString()})
                   </span>
-                  {u.pendingUploadCount > 0 && (
-                    <span className="text-[10.5px] font-mono font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
-                      รอส่ง {u.pendingUploadCount}
-                    </span>
-                  )}
                 </div>
               ))}
             </div>
           </div>
         )}
       </section>
+      )}
 
       {saveSuccessMessage && (
         <div
           className={`p-4 border rounded-xl text-xs font-semibold flex items-center justify-between gap-3 shadow-xs ${
-            saveSuccessMessage.includes('localStorage') || saveSuccessMessage.includes('Quota เต็ม')
+            saveSuccessMessage.includes('ไม่สำเร็จ') || saveSuccessMessage.includes('ไม่สามารถ')
               ? 'bg-amber-50 border-amber-300 text-amber-950'
               : 'bg-emerald-50 border-emerald-300 text-emerald-900'
           }`}
         >
           <div className="flex items-center gap-2">
-            {saveSuccessMessage.includes('localStorage') || saveSuccessMessage.includes('Quota เต็ม') ? (
+            {saveSuccessMessage.includes('ไม่สำเร็จ') || saveSuccessMessage.includes('ไม่สามารถ') ? (
               <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
             ) : (
               <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
@@ -1676,7 +1789,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       {/* ฟอร์มลงทะเบียนรับเข้าพัสดุ: 1 แถว 1 กรอบข้อมูล */}
       <form onSubmit={handleSubmitInbound} className="space-y-6">
         {/* ยิงบาร์โค้ด หรือกรอกเลขพัสดุ */}
-        <section ref={step1SectionRef} className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
+        <section ref={step1SectionRef} data-section-id="step1" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <label
               htmlFor={trackingInputMode === 'six_digits' ? 'six-digits-input' : 'tracking-number-input'}
@@ -1971,7 +2084,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
           </section>
 
           {/* กรอกข้อมูลนักเรียน และดึงข้อมูล */}
-          <section className="bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
+          <section ref={step2SectionRef} data-section-id="step2" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <label
                 htmlFor="student-unified-search-input"
@@ -1985,12 +2098,12 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                 {user && (
                   <button
                     type="button"
-                    onClick={pullFromFirebaseToLocal}
+                    onClick={() => void refreshFromSupabase()}
                     disabled={isSyncing}
                     className="min-h-[36px] px-3 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                    <span>ซิงก์รายชื่อจาก Cloud</span>
+                    <span>ซิงก์รายชื่อจาก Supabase</span>
                   </button>
                 )}
               </div>
@@ -2546,7 +2659,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
           </section>
 
           {/* กรอกประเภทสิ่งของ */}
-          <section className="bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
+          <section ref={step3SectionRef} data-section-id="step3" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
               <div>
                 <span className="block text-base font-bold text-slate-900 flex items-center gap-2">
@@ -2666,7 +2779,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
           </section>
 
           {/* เลือกสถานะการคัดแยกพัสดุ */}
-          <section className="bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
+          <section ref={step4SectionRef} data-section-id="step4" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <span className="block text-base font-bold text-slate-900 flex items-center gap-2">
@@ -2979,8 +3092,10 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
 
       {/* จุดคัดแยกลงตะกร้าหอพัก (Color-Coding Guide) */}
       <section
+        ref={dormGuideSectionRef}
+        data-section-id="dorm"
         aria-label="ป้ายสีประจำหอพักสำหรับคัดแยกตะกร้า"
-        className={`rounded-2xl border-4 ${dormTheme.borderClass} ${dormTheme.bgClass} p-5 md:p-6 space-y-5 transition-colors`}
+        className={`scroll-mt-28 rounded-2xl border-4 ${dormTheme.borderClass} ${dormTheme.bgClass} p-5 md:p-6 space-y-5 transition-colors`}
       >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-black/10 pb-4">
           <div>
@@ -3123,7 +3238,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       </section>
 
       {/* รายการพัสดุที่รับเข้าล่าสุด */}
-      <section ref={recentParcelsSectionRef} className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
+      <section ref={recentParcelsSectionRef} data-section-id="recent" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                 <Layers className="w-4 h-4 text-slate-600" />
@@ -3726,51 +3841,32 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
           return isStaffOrAdmin || isReceivedToday;
         })()}
       />
-      {/* แถบปุ่มลอยด่วน (เฉพาะหน้าจอใหญ่ lg ขึ้นไป; บนมือถืออยู่ในแถบเมนูล่าง) */}
+      {/* ปุ่มลูกศร ขึ้น / ลง มุมขวาล่างสำหรับเลื่อนไป-กลับระหว่างหัวข้อการลงทะเบียนพัสดุ (ไม่ทับเมนูหลักและโปร่งใสมองเห็นชัด) */}
       <div
-        role="region"
-        aria-label="ปุ่มลัดนำทางหน้าจอรับเข้าพัสดุ"
-        className="no-print hidden lg:flex fixed right-6 bottom-6 z-30 bg-white/95 backdrop-blur-md border border-slate-200/90 shadow-xl ring-1 ring-slate-900/5 rounded-2xl p-1.5 items-center gap-1.5"
+        role="navigation"
+        aria-label="ปุ่มลูกศรเลื่อนขึ้นลงระหว่างหัวข้อการลงทะเบียนพัสดุ"
+        className="no-print fixed right-3.5 sm:right-5 bottom-20 lg:right-6 lg:bottom-6 z-30 flex flex-col gap-2"
       >
         <button
           type="button"
-          onClick={handleScrollToRecentParcels}
-          aria-label="ดูรายการพัสดุที่รับเข้าล่าสุด"
-          title="เลื่อนไปดูรายการพัสดุที่รับเข้าล่าสุด"
-          className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer ${
-            !isAtRecentSection
-              ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs'
-              : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-          }`}
+          onClick={() => handleStepSection('prev')}
+          disabled={activeSectionId === inboundSections[0].id && !isScrolledDown}
+          aria-label="เลื่อนขึ้นหัวข้อก่อนหน้า"
+          title="เลื่อนขึ้นหัวข้อก่อนหน้า"
+          className="w-11 h-11 rounded-full bg-slate-900/55 hover:bg-slate-900/80 active:scale-95 disabled:opacity-30 disabled:pointer-events-none text-white backdrop-blur-md border border-white/35 shadow-lg ring-1 ring-slate-900/15 flex items-center justify-center transition-all cursor-pointer"
         >
-          <Layers className="w-3.5 h-3.5 shrink-0" />
-          <span>รับเข้าล่าสุด</span>
-          <span
-            className={`px-1.5 py-0.2 rounded-md font-mono text-[10.5px] font-extrabold tabular-nums ${
-              !isAtRecentSection
-                ? 'bg-white/20 text-white'
-                : 'bg-white text-slate-800 border border-slate-200'
-            }`}
-          >
-            {allFilteredRecentParcels.length}
-          </span>
-          <ArrowDown className="w-3.5 h-3.5 shrink-0" />
+          <ArrowUp className="w-5 h-5 stroke-[2.5]" />
         </button>
 
         <button
           type="button"
-          onClick={handleScrollToScan}
-          aria-label="กลับขึ้นไปสแกนโค้ด"
-          title="กลับขึ้นไปที่ช่องสแกนโค้ด / กรอกเลขพัสดุ"
-          className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer ${
-            isScrolledDown || isAtRecentSection
-              ? 'bg-slate-900 hover:bg-slate-800 text-white shadow-xs'
-              : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-          }`}
+          onClick={() => handleStepSection('next')}
+          disabled={activeSectionId === inboundSections[inboundSections.length - 1].id}
+          aria-label="เลื่อนลงหัวข้อถัดไป"
+          title="เลื่อนลงหัวข้อถัดไป"
+          className="w-11 h-11 rounded-full bg-slate-900/55 hover:bg-slate-900/80 active:scale-95 disabled:opacity-30 disabled:pointer-events-none text-white backdrop-blur-md border border-white/35 shadow-lg ring-1 ring-slate-900/15 flex items-center justify-center transition-all cursor-pointer"
         >
-          <Barcode className="w-3.5 h-3.5 shrink-0" />
-          <span>ขึ้นไปสแกนโค้ด</span>
-          <ArrowUp className="w-3.5 h-3.5 shrink-0" />
+          <ArrowDown className="w-5 h-5 stroke-[2.5]" />
         </button>
       </div>
     </div>

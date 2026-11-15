@@ -53,7 +53,7 @@ export const TrackingView: React.FC = () => {
   const [selectedDormitory, setSelectedDormitory] = useState<string>('ALL');
   const [onlyOverLimit, setOnlyOverLimit] = useState<boolean>(false);
   const [isSearchingCloudFallback, setIsSearchingCloudFallback] = useState<boolean>(false);
-  const [searchSource, setSearchSource] = useState<'local' | 'firebase' | null>(null);
+  const [searchSource, setSearchSource] = useState<'memory' | 'supabase' | null>(null);
 
   // สถานะกล้องสแกนค้นหาพัสดุด้วยกล้องหลังมือถือ
   const [isScannerOpen, setIsScannerOpen] = useState<boolean>(false);
@@ -85,7 +85,7 @@ export const TrackingView: React.FC = () => {
       const localMatches = searchParcelsLocal(trimmed, selectedStatus, selectedDormitory);
       if (localMatches.length > 0) {
         recordLocalSearchSaving();
-        setSearchSource('local');
+        setSearchSource('memory');
         return;
       }
 
@@ -103,7 +103,7 @@ export const TrackingView: React.FC = () => {
         }
       } else {
         recordLocalSearchSaving();
-        setSearchSource('local');
+        setSearchSource('memory');
       }
     },
     [
@@ -231,7 +231,7 @@ export const TrackingView: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
           <p className="text-xs font-medium text-slate-500">
-            ระบบค้นหาด้วยดัชนีในเครื่อง (In-Memory Local Search Index) · ประหยัดโควตา Read ไปแล้ว{' '}
+            ระบบค้นหาด้วยดัชนีในหน่วยความจำ (In-Memory Search Index) · ลดการคิวรีซ้ำไปแล้ว{' '}
             <span className="font-mono font-bold text-slate-800 tabular-nums">
               {quotaMetrics.localLookupsSaved}
             </span>{' '}
@@ -245,7 +245,7 @@ export const TrackingView: React.FC = () => {
         <div className="flex items-center gap-2 text-xs text-slate-600 bg-white border border-slate-200 px-3.5 py-2.5 rounded-xl">
           <Database className="w-4 h-4 text-emerald-600 shrink-0" />
           <span>
-            ค้นหาจากข้อมูลสำรองในเครื่องก่อน (<span className="font-mono font-bold">0</span> Reads) → ค้นหา Firebase เฉพาะเมื่อไม่พบ
+            ค้นหาจากข้อมูลในหน่วยความจำก่อน → ค้นหาจาก Supabase โดยตรงเมื่อไม่พบ
           </span>
         </div>
       </div>
@@ -465,15 +465,15 @@ export const TrackingView: React.FC = () => {
                   </span>
                   {isSearchingCloudFallback ? (
                     <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">
-                      ไม่พบในไฟล์สำรอง · กำลังค้นหาจาก Firebase...
+                      ไม่พบในรายการปัจจุบัน · กำลังค้นหาจาก Supabase...
                     </span>
-                  ) : searchSource === 'firebase' ? (
+                  ) : searchSource === 'supabase' ? (
                     <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 font-semibold">
-                      ไม่พบในไฟล์สำรอง → ค้นหาจาก Firebase แล้ว
+                      ค้นหาจาก Supabase โดยตรงแล้ว
                     </span>
-                  ) : searchSource === 'local' ? (
+                  ) : searchSource === 'memory' ? (
                     <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
-                      ค้นหาจากข้อมูลสำรองในระบบ (0 Firebase Reads)
+                      พบในข้อมูลที่โหลดจาก Supabase แล้ว
                     </span>
                   ) : null}
                 </span>
@@ -495,7 +495,7 @@ export const TrackingView: React.FC = () => {
                 พิมพ์คำค้นหา หรือสแกนบาร์โค้ดเพื่อค้นหาพัสดุ
               </h3>
               <p className="text-xs text-slate-500 leading-relaxed">
-                ระบบจะค้นหาจากข้อมูลสำรองในเครื่องก่อน เพื่อลดโควตาการอ่าน Firebase และจะค้นหาจาก Firebase เมื่อไม่พบในเครื่องเท่านั้น
+                ระบบจะค้นหาจากข้อมูลที่โหลดมาแล้ว และค้นหาจาก Supabase โดยตรงเมื่อไม่พบ
               </p>
               <div className="pt-2 flex flex-wrap justify-center gap-1.5 text-xs">
                 <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-mono font-semibold rounded-lg">
@@ -516,16 +516,16 @@ export const TrackingView: React.FC = () => {
         ) : isSearchingCloudFallback ? (
           <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3">
             <p className="text-base font-bold text-slate-800">
-              ไม่พบในข้อมูลสำรองของระบบ กำลังค้นหา "{searchKeyword}" ใน Firebase...
+              กำลังค้นหา "{searchKeyword}" ในฐานข้อมูล Supabase...
             </p>
             <p className="text-xs text-slate-500">
-              ระบบใช้การค้นหาแบบเจาะจงเพื่อประหยัดโควตาการอ่านข้อมูล
+              ระบบใช้การค้นหาแบบเจาะจงจากฐานข้อมูล Supabase โดยตรง
             </p>
           </div>
         ) : filteredParcels.length === 0 ? (
           <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3">
             <p className="text-base font-bold text-slate-800">
-              ไม่พบรายการพัสดุที่ตรงกับคำค้นหา "{searchKeyword}" ทั้งในข้อมูลสำรองและ Firebase
+              ไม่พบรายการพัสดุที่ตรงกับคำค้นหา "{searchKeyword}" ในฐานข้อมูล Supabase
             </p>
             <p className="text-xs text-slate-500">
               ลองตรวจสอบเลขพัสดุ รหัสนักเรียน หรือเปลี่ยนคำค้นหา

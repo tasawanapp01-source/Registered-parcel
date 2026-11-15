@@ -224,90 +224,45 @@ export interface RolePermission {
   updatedAt: string;
 }
 
-export interface PendingWriteItem {
+export interface SupabaseWriteItem {
   id: string;
   collection: 'students' | 'parcels' | 'members' | 'role_permissions' | 'system_settings';
   docId: string;
   action: 'upsert' | 'delete';
   data?: Student | Parcel | Member | RolePermission | ParcelRateLimitConfig;
-  queuedAt: string;
-  queuedByMemberId?: string;
-  queuedByName?: string;
-  queuedByRole?: string;
 }
 
-export interface LocalBackupStatus {
-  serverFileActive: boolean;
-  stagingFileExists: boolean;
-  stagingFilePath: string;
-  cacheFilePath: string;
-  stagedCount: number;
-  lastAutoUploadDate: string | null;
-  lastUploadedAt: string | null;
-  nextScheduledUploadAt: string;
-}
+export type SupabaseConnectionStatus = 'connected' | 'disconnected' | 'schema_missing';
 
-export type FirestoreConnectionStatus = 'connected' | 'offline_fallback' | 'quota_exceeded';
+export type WriteTargetMode = 'supabase_direct' | 'supabase_error';
 
-export type WriteTargetMode =
-  | 'firestore_direct'
-  | 'local_storage_quota_full'
-  | 'local_storage_offline';
-
-export interface FirestoreQuotaStatus {
+export interface SupabaseStatusCheck {
   available: boolean;
-  quotaExceeded: boolean;
   connectionFailed: boolean;
+  schemaMissing?: boolean;
   checkedAt: string;
   reason?: string;
 }
 
-export interface StudentBackupStatus {
-  count: number;
-  updatedAt: string | null;
-  filePath: string;
-  serverFileActive: boolean;
-  indexedDbActive: boolean;
-  source: string | null;
-}
-
-export interface ParcelBackupStatus {
-  count: number;
-  updatedAt: string | null;
-  filePath: string;
-  serverFileActive: boolean;
-  indexedDbActive: boolean;
-  source: string | null;
-}
-
-export interface UserParcelBackupStat {
+export interface UserParcelStat {
   userKey: string;
   userName: string;
   userRole: string;
   totalParcels: number;
   todayParcels: number;
-  pendingUploadCount: number;
   lastRecordedAt?: string | null;
 }
 
-export interface ParcelBackupSummary {
-  totalParcelsInBackup: number;
-  todayParcelsInBackup: number;
-  pendingParcelsToUpload: number;
-  totalPendingItemsToUpload: number;
-  unstagedBackupParcelsCount: number;
-  byUser: UserParcelBackupStat[];
-  serverFileActive: boolean;
-  indexedDbActive: boolean;
-  backupFilePath: string;
-  updatedAt: string | null;
+export interface SupabaseParcelSummary {
+  totalParcels: number;
+  todayParcels: number;
+  byUser: UserParcelStat[];
 }
 
 export interface QuotaMetrics {
-  localLookupsSaved: number;   // จำนวนครั้งที่ค้นหาจาก Local Cache แทนการยิง Firestore Read
-  batchedWritesQueued: number; // จำนวนรายการที่รอส่งแบบ Batch
-  firestoreReadsUsed: number;  // จำนวนการอ่านจาก Firestore จริง
-  firestoreWritesUsed: number; // จำนวนการเขียนลง Firestore จริง
+  localLookupsSaved: number;   // จำนวนครั้งที่ค้นหาจากข้อมูลในหน่วยความจำ
+  supabaseReadsUsed: number;   // จำนวนการอ่านจาก Supabase จริง
+  supabaseWritesUsed: number;  // จำนวนการเขียนลง Supabase จริง
   lastSyncedAt: string | null;
 }
 

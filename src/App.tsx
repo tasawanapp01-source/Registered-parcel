@@ -7,7 +7,6 @@ import {
   BarChart3,
   BookOpen,
   RefreshCw,
-  UploadCloud,
   AlertTriangle,
   X,
   LogOut,
@@ -24,13 +23,14 @@ import {
   SlidersHorizontal,
   Barcode,
   Layers,
-  Clock,
   WifiOff,
   Download,
-  FileSpreadsheet,
+  Copy,
+  ExternalLink,
+  ArrowRightLeft,
 } from 'lucide-react';
 import { ParcelSystemProvider, useParcelSystem } from './context/ParcelSystemContext';
-import { FIRESTORE_UPGRADE_URL, FIRESTORE_PRICING_URL } from './services/firebase';
+import { SUPABASE_SQL_EDITOR_URL } from './services/supabase';
 import { Member, AppMenuKey, APP_MENU_DEFINITIONS } from './types/parcel';
 import { InboundView, InboundQuickAction } from './components/InboundView';
 import { TrackingView } from './components/TrackingView';
@@ -59,22 +59,17 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
     overLimitStudents,
     weeklyWarningPopup,
     closeWeeklyWarningPopup,
-    pendingWrites,
-    localBackupStatus,
-    studentBackupStatus,
-    parcelBackupSummary,
-    firestoreConnectionStatus,
-    quotaMetrics,
-    syncMode,
-    setSyncMode,
+    supabaseParcelSummary,
+    supabaseConnectionStatus,
     isSyncing,
-    quotaExceeded,
-    syncPendingToFirebase,
-    uploadStagedToFirebaseNow,
-    uploadAllBackupParcelsToFirebaseNow,
-    pullFromFirebaseToLocal,
-    exportLocalStoragePendingJson,
-    exportLocalStorageParcelsCsv,
+    supabaseSchemaMissing,
+    supabaseConnectionDetails,
+    isCheckingSupabaseStatus,
+    refreshSupabaseConnectionStatus,
+    copySupabaseSetupSql,
+    migrateAllDataToSupabase,
+    refreshFromSupabase,
+    exportParcelsJson,
     toastMessage,
     clearToast,
   } = useParcelSystem();
@@ -475,45 +470,17 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                       )}
                     </div>
 
-                    {/* ปุ่มจัดการซิงก์ไฟล์สำรองในเครื่อง & Firebase */}
+                    {/* ปุ่มรีเฟรชข้อมูลจาก Supabase */}
                     <div className="mt-1 pt-1.5 border-t border-slate-100 px-1 space-y-1">
                       <button
                         type="button"
                         onClick={() => {
-                          void uploadStagedToFirebaseNow();
-                          setIsSettingsOpen(false);
-                        }}
-                        disabled={isSyncing || pendingWrites.length === 0}
-                        className="w-full px-2.5 py-2 text-left text-xs flex items-center justify-between rounded-lg hover:bg-indigo-50 transition-colors cursor-pointer disabled:opacity-50 text-slate-700"
-                        title="อัปโหลดไฟล์สำรองในระบบขึ้น Firebase ทันทีและลบไฟล์ชั่วคราว"
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
-                            <UploadCloud className={`w-3.5 h-3.5 ${isSyncing ? 'animate-pulse' : ''}`} />
-                          </div>
-                          <div>
-                            <div className="font-bold text-slate-900">
-                              {isSyncing ? 'กำลังอัปโหลด...' : 'อัปโหลดขึ้น Firebase ทันที'}
-                            </div>
-                            <div className="text-[10px] text-slate-400">
-                              ปกติระบบอัปโหลดอัตโนมัติ 00:00 น. แล้วลบไฟล์สำรอง
-                            </div>
-                          </div>
-                        </div>
-                        <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200 font-semibold">
-                          {pendingWrites.length} รอส่ง
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void pullFromFirebaseToLocal();
+                          void refreshFromSupabase();
                           setIsSettingsOpen(false);
                         }}
                         disabled={isSyncing}
                         className="w-full px-2.5 py-2 text-left text-xs flex items-center justify-between rounded-lg hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-50 text-slate-700"
-                        title="ดึงข้อมูลล่าสุดจากฐานข้อมูล Firestore มาเก็บเป็นข้อมูลสำรองในระบบ"
+                        title="ดึงข้อมูลล่าสุดจากฐานข้อมูล Supabase โดยตรง"
                       >
                         <div className="flex items-center gap-2.5">
                           <div className="w-6 h-6 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
@@ -521,13 +488,13 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                           </div>
                           <div>
                             <div className="font-bold text-slate-900">
-                              {isSyncing ? 'กำลังซิงค์...' : 'ดึงข้อมูลจาก Firebase'}
+                              {isSyncing ? 'กำลังโหลดข้อมูล...' : 'รีเฟรชข้อมูลจาก Supabase'}
                             </div>
-                            <div className="text-[10px] text-slate-400">อัปเดตแคชสำรองในเครื่องจาก Firestore</div>
+                            <div className="text-[10px] text-slate-400">ดึงข้อมูลล่าสุดจากฐานข้อมูล Supabase</div>
                           </div>
                         </div>
                         <span className="text-[10px] font-mono text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 font-semibold">
-                          Pull DB
+                          Live DB
                         </span>
                       </button>
                     </div>
@@ -538,148 +505,147 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
           </nav>
         </div>
 
-        {/* แถวที่ 2 (วางไว้บรรทัดใหม่): ยอดรับเข้าพัสดุรวมทุก User ในฐานข้อมูลสำรอง + สถานะพร้อมอัปโหลด 00:00 น. และปุ่มผู้ดูแลระบบ+ออกจากระบบ */}
+        {/* แถวที่ 2: สถานะการเชื่อมต่อ Supabase โดยตรง + ยอดพัสดุรวมและปุ่มรีเฟรช */}
         <div className="bg-slate-50/95 border-b border-slate-200/90 px-4 md:px-8 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs">
-          {/* ข้อมูลสถานะ Quota + ยอดพัสดุรวมทุก User และปุ่มส่งออก/อัปโหลด */}
+          {/* ข้อมูลสถานะ Supabase + ยอดพัสดุรวมทุก User */}
           <div className="hidden lg:flex items-center flex-wrap gap-2 text-slate-600">
-            <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-bold ${
-                quotaExceeded
-                  ? 'bg-rose-50 text-rose-800 border-rose-300'
-                  : firestoreConnectionStatus === 'offline_fallback'
-                  ? 'bg-amber-50 text-amber-900 border-amber-300'
-                  : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+            <button
+              type="button"
+              onClick={() => void refreshSupabaseConnectionStatus(true)}
+              disabled={isCheckingSupabaseStatus}
+              title={
+                supabaseConnectionDetails
+                  ? `คลิกเพื่อตรวจสอบการเชื่อมต่อ Supabase (${supabaseConnectionDetails.url}) · Latency ${supabaseConnectionDetails.latencyMs} ms`
+                  : 'คลิกเพื่อตรวจสอบการเชื่อมต่อ Supabase'
+              }
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-bold transition-colors cursor-pointer disabled:opacity-70 ${
+                supabaseSchemaMissing
+                  ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                  : supabaseConnectionStatus === 'disconnected'
+                  ? 'bg-rose-50 hover:bg-rose-100 text-rose-800 border-rose-300'
+                  : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
               }`}
             >
               <span
                 className={`w-2 h-2 rounded-full ${
-                  quotaExceeded
-                    ? 'bg-rose-500'
-                    : firestoreConnectionStatus === 'offline_fallback'
+                  isCheckingSupabaseStatus
+                    ? 'bg-indigo-500 animate-ping'
+                    : supabaseSchemaMissing
                     ? 'bg-amber-500'
+                    : supabaseConnectionStatus === 'disconnected'
+                    ? 'bg-rose-500'
                     : 'bg-emerald-500'
                 }`}
               />
               <span>
-                {quotaExceeded
-                  ? 'Quota เต็ม · บันทึกลง localStorage'
-                  : firestoreConnectionStatus === 'offline_fallback'
-                  ? 'ออฟไลน์ · บันทึกลง localStorage'
-                  : 'Firestore ปกติ · รับลงฐานข้อมูลโดยตรง'}
+                {isCheckingSupabaseStatus
+                  ? 'กำลังตรวจสอบ Supabase...'
+                  : supabaseSchemaMissing
+                  ? 'รอสร้างตาราง Supabase (รัน SQL)'
+                  : supabaseConnectionStatus === 'disconnected'
+                  ? 'ไม่สามารถเชื่อมต่อ Supabase ได้'
+                  : supabaseConnectionDetails?.connected
+                  ? `Supabase ออนไลน์ · ${supabaseConnectionDetails.projectRef} (${supabaseConnectionDetails.latencyMs} ms)`
+                  : 'Supabase · บันทึกตรงฐานข้อมูล'}
               </span>
-            </span>
+            </button>
 
             <span className="inline-flex items-center gap-1.5 font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200">
               <Database className="w-3.5 h-3.5 text-indigo-600" />
               <span>
-                รับเข้าสำรองรวมทุก User:{' '}
+                พัสดุใน Supabase:{' '}
                 <strong className="font-mono text-indigo-900 tabular-nums">
-                  {parcelBackupSummary.totalParcelsInBackup.toLocaleString()}
+                  {supabaseParcelSummary.totalParcels.toLocaleString()}
                 </strong>{' '}
                 ชิ้น (วันนี้{' '}
                 <strong className="font-mono text-emerald-700 tabular-nums">
-                  {parcelBackupSummary.todayParcelsInBackup.toLocaleString()}
+                  {supabaseParcelSummary.todayParcels.toLocaleString()}
                 </strong>
                 )
               </span>
             </span>
-            {pendingWrites.length > 0 ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void uploadStagedToFirebaseNow()}
-                  disabled={isSyncing}
-                  title="อัปโหลดข้อมูลที่ค้างใน localStorage เข้าสู่ Firestore ทันที"
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-semibold transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  <UploadCloud className="w-3.5 h-3.5 text-amber-700" />
-                  <span>อัปโหลดจาก localStorage ({pendingWrites.length.toLocaleString()} รายการ)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={exportLocalStoragePendingJson}
-                  title="ส่งออกข้อมูลที่บันทึกไว้ใน localStorage เป็นไฟล์ JSON"
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-semibold transition-colors cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>ส่งออก JSON</span>
-                </button>
-              </>
-            ) : parcelBackupSummary.totalParcelsInBackup > 0 ? (
-              <button
-                type="button"
-                onClick={() => void uploadAllBackupParcelsToFirebaseNow()}
-                disabled={isSyncing}
-                title="เตรียมพัสดุทั้งหมดในฐานข้อมูลสำรองทุก User และอัปโหลดขึ้น Firebase ทันที"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-semibold transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <UploadCloud className="w-3.5 h-3.5 text-indigo-600" />
-                <span>ซิงก์พัสดุทั้งหมดขึ้น Firestore ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()})</span>
-              </button>
-            ) : null}
+
+            <button
+              type="button"
+              onClick={() => void refreshFromSupabase()}
+              disabled={isSyncing}
+              title="ดึงข้อมูลล่าสุดจาก Supabase ทันที"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-semibold transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-indigo-600 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>รีเฟรชข้อมูล</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={exportParcelsJson}
+              title="ส่งออกข้อมูลจาก Supabase เป็นไฟล์ JSON"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-semibold transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-indigo-600" />
+              <span>ส่งออก JSON</span>
+            </button>
+
             <span className="text-slate-500 text-xs">
-              ({connectedEmail}): นักเรียน <strong className="text-slate-900 font-mono tabular-nums">{students.length}</strong> คน (สำรอง <strong className="text-indigo-700 font-mono tabular-nums">{studentBackupStatus.count}</strong>) · {parcelBackupSummary.byUser.length} User
+              ({connectedEmail}): นักเรียน <strong className="text-slate-900 font-mono tabular-nums">{students.length}</strong> คน · {supabaseParcelSummary.byUser.length} ผู้บันทึก
             </span>
           </div>
 
-          {/* แถบย่อบนมือถือ/แท็บเล็ต แสดงสถานะ Quota + ยอดพัสดุรวมทุก User */}
+          {/* แถบย่อบนมือถือ/แท็บเล็ต แสดงสถานะ Supabase */}
           <div className="flex lg:hidden items-center flex-wrap gap-1.5 text-[11px]">
-            <span
-              className={`inline-flex items-center gap-1 font-bold px-2 py-1 rounded-lg border ${
-                quotaExceeded
-                  ? 'bg-rose-50 text-rose-800 border-rose-300'
-                  : firestoreConnectionStatus === 'offline_fallback'
+            <button
+              type="button"
+              onClick={() => void refreshSupabaseConnectionStatus(true)}
+              disabled={isCheckingSupabaseStatus}
+              className={`inline-flex items-center gap-1 font-bold px-2 py-1 rounded-lg border cursor-pointer disabled:opacity-70 ${
+                supabaseSchemaMissing
                   ? 'bg-amber-50 text-amber-900 border-amber-300'
+                  : supabaseConnectionStatus === 'disconnected'
+                  ? 'bg-rose-50 text-rose-800 border-rose-300'
                   : 'bg-emerald-50 text-emerald-800 border-emerald-200'
               }`}
             >
               <span
                 className={`w-1.5 h-1.5 rounded-full ${
-                  quotaExceeded
-                    ? 'bg-rose-500'
-                    : firestoreConnectionStatus === 'offline_fallback'
+                  isCheckingSupabaseStatus
+                    ? 'bg-indigo-500 animate-ping'
+                    : supabaseSchemaMissing
                     ? 'bg-amber-500'
+                    : supabaseConnectionStatus === 'disconnected'
+                    ? 'bg-rose-500'
                     : 'bg-emerald-500'
                 }`}
               />
               <span>
-                {quotaExceeded
-                  ? 'Quota เต็ม (localStorage)'
-                  : firestoreConnectionStatus === 'offline_fallback'
+                {isCheckingSupabaseStatus
+                  ? 'กำลังตรวจ...'
+                  : supabaseSchemaMissing
+                  ? 'รอสร้างตาราง SQL'
+                  : supabaseConnectionStatus === 'disconnected'
                   ? 'ออฟไลน์'
-                  : 'Firestore ตรง'}
+                  : supabaseConnectionDetails?.connected
+                  ? `Supabase ออนไลน์ (${supabaseConnectionDetails.latencyMs}ms)`
+                  : 'Supabase ตรง'}
               </span>
-            </span>
+            </button>
             <span className="inline-flex items-center gap-1 font-semibold text-indigo-800 bg-indigo-50 px-2 py-1 rounded-lg border border-indigo-200">
               <Database className="w-3 h-3 text-indigo-600 shrink-0" />
               <span>
-                สำรอง:{' '}
+                พัสดุ:{' '}
                 <strong className="font-mono tabular-nums">
-                  {parcelBackupSummary.totalParcelsInBackup.toLocaleString()}
+                  {supabaseParcelSummary.totalParcels.toLocaleString()}
                 </strong>
               </span>
             </span>
-            {pendingWrites.length > 0 && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void uploadStagedToFirebaseNow()}
-                  disabled={isSyncing}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-100 text-amber-950 border border-amber-300 font-bold cursor-pointer disabled:opacity-50"
-                >
-                  <UploadCloud className="w-3 h-3 text-amber-700 shrink-0" />
-                  <span>อัปโหลด {pendingWrites.length}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={exportLocalStoragePendingJson}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white text-slate-800 border border-slate-300 font-bold cursor-pointer"
-                >
-                  <Download className="w-3 h-3 text-indigo-600 shrink-0" />
-                  <span>ส่งออก</span>
-                </button>
-              </>
-            )}
+            <button
+              type="button"
+              onClick={() => void refreshFromSupabase()}
+              disabled={isSyncing}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white text-slate-800 border border-slate-300 font-bold cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3 h-3 text-indigo-600 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>รีเฟรช</span>
+            </button>
           </div>
 
           {/* ปุ่มผู้ดูแลระบบหลัก (Admin) และปุ่มออกจากระบบ รวมให้เป็นปุ่มเดียวกัน */}
@@ -738,129 +704,85 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
         </div>
       </header>
 
-      {/* แจ้งเตือนเมื่อโควตา Firestore เต็ม หรือมีข้อมูลค้างใน localStorage พร้อมปุ่มส่งออกและอัปโหลดเข้า Firestore */}
-      {(quotaExceeded || pendingWrites.length > 0) && (
+      {/* แบนเนอร์ช่วยสร้างตาราง Supabase (2 ขั้นตอนง่ายที่สุด) + ย้ายข้อมูลเข้า Supabase */}
+      {supabaseSchemaMissing && (
         <div className="no-print max-w-7xl w-full mx-auto px-4 md:px-8 pt-4">
           <div
             role="status"
-            className={`px-4 py-3 rounded-xl border text-xs flex flex-col lg:flex-row lg:items-center justify-between gap-3 shadow-xs ${
-              quotaExceeded
-                ? 'bg-amber-50 border-amber-300 text-amber-950'
-                : 'bg-indigo-50 border-indigo-200 text-indigo-950'
-            }`}
+            className="px-4 py-3.5 rounded-xl border border-amber-300 bg-amber-50 text-amber-950 text-xs flex flex-col lg:flex-row lg:items-center justify-between gap-3 shadow-xs"
           >
-            <div className="flex items-start sm:items-center gap-2.5">
-              <AlertTriangle
-                className={`w-4.5 h-4.5 shrink-0 mt-0.5 sm:mt-0 ${
-                  quotaExceeded ? 'text-amber-600' : 'text-indigo-600'
-                }`}
-              />
-              <div className="space-y-0.5">
-                {quotaExceeded ? (
-                  <>
-                    <div>
-                      <span className="font-bold">โควตา Firestore รายวัน (Free Tier) เต็มแล้ว: </span>
-                      <span>
-                        ระบบกำลังบันทึกข้อมูลใหม่ลง <strong className="font-mono">localStorage</strong> อัตโนมัติ (ค้างส่ง{' '}
-                        <strong className="font-mono">{pendingWrites.length.toLocaleString()}</strong> รายการ)
-                      </span>
-                    </div>
-                    <div className="text-[11px] opacity-90">
-                      คุณสามารถกด <strong>ส่งออก JSON / CSV</strong> เก็บไว้ หรือกด <strong>อัปโหลดเข้า Firestore</strong> เมื่อโควตารีเซ็ตในวันถัดไป ({' '}
-                      <a
-                        href={FIRESTORE_PRICING_URL}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline font-semibold hover:text-amber-700"
-                      >
-                        ข้อมูลโควตา Spark Plan
-                      </a>
-                      )
-                    </div>
-                  </>
-                ) : (
-                  <div>
-                    <span className="font-bold">
-                      มีข้อมูลที่บันทึกไว้ใน localStorage จำนวน {pendingWrites.length.toLocaleString()} รายการ:{' '}
-                    </span>
-                    <span>พร้อมให้คุณกดส่งออกไฟล์ หรืออัปโหลดเข้าฐานข้อมูล Firestore ได้ทันที</span>
-                  </div>
-                )}
+            <div className="flex items-start gap-2.5">
+              <Database className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div className="font-extrabold text-sm text-amber-950">
+                  เชื่อมต่อโปรเจกต์ Supabase สำเร็จ — เหลือขั้นตอนสร้างตาราง 1 ครั้ง (30 วินาที)
+                </div>
+                <p className="text-[11.5px] text-amber-900 leading-relaxed">
+                  <strong>ขั้นที่ 1:</strong> กดปุ่ม <em>“คัดลอก SQL สร้างตาราง”</em> แล้ววางใน Supabase SQL Editor กด <strong>Run</strong> ·{' '}
+                  <strong>ขั้นที่ 2:</strong> กลับมาหน้านี้แล้วกด <em>“เชื่อมต่อและตั้งค่าฐานข้อมูล Supabase ทันที”</em>
+                </p>
               </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
               <button
                 type="button"
-                onClick={exportLocalStoragePendingJson}
-                className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-900 border border-slate-300 font-bold text-[11px] inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                onClick={() => void copySupabaseSetupSql()}
+                className="px-3 py-2 rounded-lg bg-white hover:bg-slate-100 text-slate-900 border border-amber-300 font-bold text-[11px] inline-flex items-center gap-1.5 transition-colors cursor-pointer"
               >
-                <Download className="w-3.5 h-3.5 text-indigo-600" />
-                <span>ส่งออก JSON (localStorage)</span>
+                <Copy className="w-3.5 h-3.5 text-indigo-600" />
+                <span>คัดลอก SQL สร้างตาราง (setup.sql)</span>
               </button>
+
+              <a
+                href={SUPABASE_SQL_EDITOR_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-[11px] inline-flex items-center gap-1.5 transition-colors"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>เปิด Supabase SQL Editor</span>
+              </a>
 
               <button
                 type="button"
-                onClick={exportLocalStorageParcelsCsv}
-                className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-900 border border-slate-300 font-bold text-[11px] inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                onClick={() => void migrateAllDataToSupabase()}
+                disabled={isSyncing}
+                className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                <span>ส่งออก CSV</span>
+                <ArrowRightLeft className="w-3.5 h-3.5" />
+                <span>{isSyncing ? 'กำลังเชื่อมต่อ...' : 'เชื่อมต่อและตั้งค่า Supabase ทันที'}</span>
               </button>
-
-              {pendingWrites.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => void uploadStagedToFirebaseNow()}
-                  disabled={isSyncing}
-                  className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  <UploadCloud className="w-3.5 h-3.5" />
-                  <span>อัปโหลดเข้า Firestore ({pendingWrites.length})</span>
-                </button>
-              )}
-
-              {quotaExceeded && (
-                <a
-                  href={FIRESTORE_UPGRADE_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-[11px] text-center transition-colors"
-                >
-                  อัปเกรด Firestore
-                </a>
-              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* แจ้งเตือนเมื่อเชื่อมต่อ Firestore ไม่ได้และระบบสลับมาใช้ฐานข้อมูลสำรองรายชื่อนักเรียน */}
-      {firestoreConnectionStatus === 'offline_fallback' && !quotaExceeded && (
+      {/* แจ้งเตือนเมื่อไม่สามารถเชื่อมต่อฐานข้อมูล Supabase ได้ */}
+      {supabaseConnectionStatus === 'disconnected' && !supabaseSchemaMissing && (
         <div className="no-print max-w-7xl w-full mx-auto px-4 md:px-8 pt-4">
           <div
             role="status"
-            className="px-4 py-3 rounded-xl border bg-indigo-50 border-indigo-300 text-indigo-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-xs"
+            className="px-4 py-3 rounded-xl border bg-rose-50 border-rose-300 text-rose-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-xs"
           >
             <div className="flex items-start sm:items-center gap-2.5">
-              <WifiOff className="w-4 h-4 text-indigo-700 shrink-0 mt-0.5 sm:mt-0" />
+              <WifiOff className="w-4 h-4 text-rose-700 shrink-0 mt-0.5 sm:mt-0" />
               <div>
-                <span className="font-bold">ไม่สามารถเชื่อมต่อ Firestore ได้ในขณะนี้: </span>
+                <span className="font-bold">ไม่สามารถเชื่อมต่อฐานข้อมูล Supabase ได้ในขณะนี้: </span>
                 <span>
-                  ระบบกำลังทำงานจากฐานข้อมูลสำรองรายชื่อนักเรียนในเครื่อง (
-                  <strong className="font-mono">{studentBackupStatus.count.toLocaleString()}</strong> คน) และจะอัปโหลดข้อมูลใหม่ขึ้น Firebase เมื่อเชื่อมต่อได้
+                  ระบบบันทึกข้อมูลลง Supabase โดยตรงเท่านั้น (ไม่ใช้ localStorage) กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองเชื่อมต่อใหม่
                 </span>
               </div>
             </div>
-            {isMenuAllowed('students') && (
-              <button
-                type="button"
-                onClick={() => setActiveTab('students')}
-                className="shrink-0 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-[11px] transition-colors cursor-pointer"
-              >
-                จัดการฐานข้อมูลสำรองนักเรียน
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => void refreshFromSupabase()}
+              disabled={isSyncing}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold text-[11px] transition-colors cursor-pointer disabled:opacity-50 inline-flex items-center gap-1.5"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>เชื่อมต่อ Supabase ใหม่</span>
+            </button>
           </div>
         </div>
       )}
@@ -916,9 +838,9 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-[11px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 text-indigo-600" />
-                  Local Staging ({pendingWrites.length} รอส่ง · อัตโนมัติ 00:00 น.)
+                <span className="text-[11px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5">
+                  <Database className="w-3.5 h-3.5 text-emerald-600" />
+                  Supabase Direct · บันทึกตรงฐานข้อมูล
                 </span>
               </div>
             </div>
@@ -1532,41 +1454,12 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                 </button>
               )}
 
-              {/* ปุ่มจัดการซิงก์ไฟล์สำรองในระบบ & Firebase สำหรับมือถือ */}
+              {/* ปุ่มรีเฟรชข้อมูลจาก Supabase สำหรับมือถือ */}
               <div className="pt-2 border-t border-slate-100 space-y-2">
-                {pendingWrites.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void uploadStagedToFirebaseNow();
-                      setIsMobileSettingsOpen(false);
-                    }}
-                    disabled={isSyncing}
-                    className="w-full p-3 text-left rounded-xl flex items-center justify-between bg-indigo-600 hover:bg-indigo-700 text-white transition-colors cursor-pointer disabled:opacity-50 shadow-xs"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-lg bg-indigo-500 flex items-center justify-center shrink-0">
-                        <UploadCloud className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold">
-                          {isSyncing ? 'กำลังอัปโหลด...' : 'อัปโหลดขึ้น Firebase ทันที'}
-                        </div>
-                        <div className="text-[10px] text-indigo-100 font-normal">
-                          ส่งข้อมูลสำรองขึ้น Firebase แล้วลบไฟล์ชั่วคราว
-                        </div>
-                      </div>
-                    </div>
-                    <span className="text-[10px] font-mono bg-white/20 px-2 py-0.5 rounded font-semibold">
-                      {pendingWrites.length} รายการ
-                    </span>
-                  </button>
-                )}
-
                 <button
                   type="button"
                   onClick={() => {
-                    void pullFromFirebaseToLocal();
+                    void refreshFromSupabase();
                     setIsMobileSettingsOpen(false);
                   }}
                   disabled={isSyncing}
@@ -1578,15 +1471,15 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                     </div>
                     <div>
                       <div className="text-xs font-bold">
-                        {isSyncing ? 'กำลังโหลดข้อมูล...' : 'ดึงข้อมูลจาก Firebase'}
+                        {isSyncing ? 'กำลังโหลดข้อมูล...' : 'รีเฟรชข้อมูลจาก Supabase'}
                       </div>
                       <div className="text-[10px] text-slate-400 font-normal">
-                        อัปเดตข้อมูลสำรองในเครื่องจาก Firestore
+                        ดึงข้อมูลล่าสุดจากฐานข้อมูล Supabase โดยตรง
                       </div>
                     </div>
                   </div>
                   <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/40 font-semibold">
-                    Pull DB
+                    Live DB
                   </span>
                 </button>
               </div>

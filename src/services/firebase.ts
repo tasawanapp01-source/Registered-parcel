@@ -35,17 +35,24 @@ import {
   RolePermission,
   AppMenuKey,
   ALL_MENU_KEYS,
-  PendingWriteItem,
+  SupabaseWriteItem,
   INITIAL_MEMBERS,
   INITIAL_ROLE_PERMISSIONS,
   INITIAL_STUDENTS,
   INITIAL_PARCELS,
   ParcelRateLimitConfig,
   DEFAULT_PARCEL_RATE_LIMIT_CONFIG,
-  FirestoreQuotaStatus,
   getRelativeDateString,
   formatStudentCode,
 } from '../types/parcel';
+
+export interface FirestoreQuotaStatus {
+  available: boolean;
+  quotaExceeded: boolean;
+  connectionFailed: boolean;
+  checkedAt: string;
+  reason?: string;
+}
 
 // ค่าคงที่สำหรับบัญชีหลักของระบบที่เชื่อมต่ออัตโนมัติ (Tasawan_app01@pcccr.ac.th)
 export const AUTO_CLOUD_EMAIL = 'Tasawan_app01@pcccr.ac.th';
@@ -163,8 +170,6 @@ testConnection();
 
 /**
  * ตรวจสอบสถานะ Quota และการเชื่อมต่อของ Firestore แบบเบา (ใช้สูงสุด 1 Read)
- * หาก Quota ไม่เต็ม -> คืน available: true เพื่อให้บันทึกลงฐานข้อมูล Firestore โดยตรง
- * หาก Quota เต็ม -> คืน available: false, quotaExceeded: true เพื่อสลับไปบันทึกใน localStorage
  */
 export async function checkFirestoreQuotaStatus(): Promise<FirestoreQuotaStatus> {
   const checkedAt = new Date().toISOString();
@@ -1334,11 +1339,10 @@ export function subscribeToWorkspaceCloudData(
 }
 
 /**
- * อัปโหลดรายการที่พักไว้ในไฟล์สำรองของระบบ (PendingWriteItem[]) ขึ้น Firestore แบบ Batch
- * (ใช้ 0 Reads ในการเขียน และปฏิบัติตามกฎ Security Rules ทุกประการ)
+ * อัปโหลดรายการเขียนแบบ Batch ขึ้น Firestore
  */
 export async function uploadPendingWritesBatchToFirestore(
-  items: PendingWriteItem[],
+  items: SupabaseWriteItem[],
   ownerId: string = AUTO_CLOUD_OWNER_ID,
   onProgress?: (completed: number, total: number) => void
 ): Promise<{ uploadedCount: number; quotaExceeded?: boolean; connectionFailed?: boolean }> {

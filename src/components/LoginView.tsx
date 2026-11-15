@@ -8,12 +8,18 @@ import {
   PackageCheck,
   ShieldCheck,
   Boxes,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 import { useParcelSystem } from '../context/ParcelSystemContext';
-import { FIRESTORE_UPGRADE_URL, FIRESTORE_PRICING_URL } from '../services/firebase';
 
 export const LoginView: React.FC = () => {
-  const { loginWithCredentials, quotaExceeded } = useParcelSystem();
+  const {
+    loginWithCredentials,
+    supabaseConnectionDetails,
+    isCheckingSupabaseStatus,
+    refreshSupabaseConnectionStatus,
+  } = useParcelSystem();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -71,38 +77,6 @@ export const LoginView: React.FC = () => {
               <Lock className="w-4 h-4" />
             </div>
           </div>
-
-          {quotaExceeded && (
-            <div
-              role="status"
-              className="mb-5 p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-950 text-xs space-y-1.5 shadow-xs"
-            >
-              <div className="font-bold flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
-                <span>โควตาการอ่านข้อมูล Firestore รายวันเต็มแล้ว (Free Tier)</span>
-              </div>
-              <p className="text-[11px] text-amber-900 leading-relaxed">
-                โควตาจะรีเซ็ตอัตโนมัติในวันถัดไป (Spark Plan / Enterprise Edition){' '}
-                <a
-                  href={FIRESTORE_PRICING_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline font-semibold hover:text-amber-700"
-                >
-                  ดูรายละเอียดโควตา
-                </a>{' '}
-                หรือ{' '}
-                <a
-                  href={FIRESTORE_UPGRADE_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline font-semibold hover:text-amber-700"
-                >
-                  อัปเกรดฐานข้อมูลใน Firebase Console
-                </a>
-              </p>
-            </div>
-          )}
 
           {errorMsg && (
             <div
@@ -179,8 +153,73 @@ export const LoginView: React.FC = () => {
           </div>
         </div>
 
+        {/* Supabase Database Connection Status Card */}
+        <div className="mt-4 bg-white/90 backdrop-blur-sm border border-slate-200/90 rounded-2xl p-3.5 shadow-sm text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                  !supabaseConnectionDetails || isCheckingSupabaseStatus
+                    ? 'bg-slate-400 animate-pulse'
+                    : supabaseConnectionDetails.connected && supabaseConnectionDetails.schemaReady
+                    ? 'bg-emerald-500'
+                    : 'bg-amber-500'
+                }`}
+              />
+              <Database className="w-4 h-4 text-indigo-600 shrink-0" />
+              <span className="font-bold text-slate-800 truncate">
+                {isCheckingSupabaseStatus
+                  ? 'กำลังตรวจสอบการเชื่อมต่อ Supabase...'
+                  : !supabaseConnectionDetails
+                  ? 'กำลังเตรียมเชื่อมต่อ Supabase...'
+                  : supabaseConnectionDetails.connected && supabaseConnectionDetails.schemaReady
+                  ? 'เชื่อมต่อฐานข้อมูล Supabase สำเร็จ'
+                  : supabaseConnectionDetails.connected
+                  ? 'เชื่อมต่อ Supabase แล้ว (รอสร้างตาราง)'
+                  : 'ไม่สามารถเชื่อมต่อ Supabase'}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void refreshSupabaseConnectionStatus(false)}
+              disabled={isCheckingSupabaseStatus}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-[11px] transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+              title="ตรวจสอบการเชื่อมต่อ Supabase อีกครั้ง"
+            >
+              <RefreshCw className={`w-3 h-3 ${isCheckingSupabaseStatus ? 'animate-spin' : ''}`} />
+              <span>ตรวจสอบ</span>
+            </button>
+          </div>
+
+          {supabaseConnectionDetails && (
+            <div className="mt-2 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-slate-500">
+              <span className="font-mono text-slate-700">
+                {supabaseConnectionDetails.projectRef}.supabase.co ·{' '}
+                <strong className="text-emerald-700">{supabaseConnectionDetails.latencyMs} ms</strong>
+              </span>
+              {supabaseConnectionDetails.schemaReady && (
+                <span className="font-mono text-slate-600">
+                  นักเรียน{' '}
+                  <strong className="text-slate-900">
+                    {(
+                      supabaseConnectionDetails.tables.find((t) => t.table === 'students')?.count ?? 0
+                    ).toLocaleString()}
+                  </strong>{' '}
+                  · พัสดุ{' '}
+                  <strong className="text-slate-900">
+                    {(
+                      supabaseConnectionDetails.tables.find((t) => t.table === 'parcels')?.count ?? 0
+                    ).toLocaleString()}
+                  </strong>
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Footer info */}
-        <p className="text-center text-xs text-slate-500 mt-6">
+        <p className="text-center text-xs text-slate-500 mt-4">
           หากลืมรหัสผ่านหรือต้องการเพิ่มบัญชีผู้ใช้ใหม่ กรุณาติดต่อผู้ดูแลระบบ
         </p>
       </div>

@@ -807,20 +807,20 @@ git push -u origin main`;
           </div>
         </div>
 
-        {/* สรุป 3 กลยุทธ์ลด Limit การใช้งาน Firebase */}
+        {/* สรุป 3 กลยุทธ์หลักของสถาปัตยกรรมฐานข้อมูล */}
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 space-y-2.5">
           <h3 className="text-sm font-bold text-emerald-950">
-            กลยุทธ์หลักในการลด Limit การใช้งาน Firebase (Local-First Architecture):
+            กลยุทธ์หลักของสถาปัตยกรรมฐานข้อมูล (Direct Supabase Architecture):
           </h3>
           <ul className="text-xs text-emerald-900 space-y-1.5 list-disc list-inside leading-relaxed">
             <li>
-              <strong>1. พักข้อมูลลงบนตัวโปรแกรมก่อน (Local Buffer & Write Coalescing):</strong> ทุกครั้งที่สแกนรับพัสดุหรือเปลี่ยนสถานะ ระบบจะบันทึกลง <code className="font-mono">localStorage</code> ทันทีและเก็บเข้าคิว <code className="font-mono">pendingWrites</code> หากพัสดุชิ้นเดิมถูกเปลี่ยนสถานะหลายครั้งก่อนซิงก์ ระบบจะยุบรวมเหลือการเขียนขึ้น Firebase เพียง 1 ครั้งเมื่อกดปุ่ม <em>ซิงก์ขึ้น Firebase (Batch Sync)</em>
+              <strong>1. บันทึกข้อมูลลงฐานข้อมูล Supabase โดยตรงทันที (Direct Supabase Persistence):</strong> ทุกการสแกนรับพัสดุ แก้ไขสถานะ และนำเข้าข้อมูลจะส่งคำสั่งบันทึกหรืออัปเดตไปยังฐานข้อมูล Supabase โดยตรงทันที โดยไม่มีการจัดเก็บข้อมูลลง <code className="font-mono">localStorage</code>
             </li>
             <li>
-              <strong>2. ดัชนีค้นหาในหน่วยความจำ (Zero-Read Local Search Index):</strong> ข้อมูลนักเรียนถูกสร้างเป็น <code className="font-mono">Map&lt;studentCode, Student&gt;</code> ใน RAM ของโปรแกรม การพิมพ์รหัสนักเรียนหรือพิมพ์ค้นหาเลขพัสดุทุกตัวอักษรจะค้นหาจากหน่วยความจำเครื่อง 100% (ใช้ Firestore Read = 0 ครั้ง)
+              <strong>2. ดัชนีค้นหาในหน่วยความจำ (In-Memory Search Index):</strong> ข้อมูลนักเรียนถูกจัดทำเป็น <code className="font-mono">Map&lt;studentCode, Student&gt;</code> ใน RAM ของโปรแกรม ช่วยให้ค้นหาข้อมูลได้รวดเร็วทันใจ และค้นหาเสริมจาก Supabase โดยตรงเมื่อไม่พบ
             </li>
             <li>
-              <strong>3. การฝังข้อมูลหอพักลงในพัสดุ (Denormalization):</strong> ลดการทำ Relational Read ระหว่างตาราง <code className="font-mono">parcels</code> และ <code className="font-mono">students</code> ลงได้ 50% ทันทีเมื่อดึงข้อมูลมาออกใบรายการ
+              <strong>3. การฝังข้อมูลหอพักลงในพัสดุ (Denormalization):</strong> ลดการ Join ระหว่างตาราง <code className="font-mono">parcels</code> และ <code className="font-mono">students</code> เมื่อดึงข้อมูลมาแสดงผลและพิมพ์ใบนำส่ง
             </li>
           </ul>
         </div>

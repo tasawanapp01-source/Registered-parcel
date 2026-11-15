@@ -13,24 +13,19 @@ import {
   DEFAULT_TEACHER_MENU_KEYS,
   INITIAL_MEMBERS,
   INITIAL_ROLE_PERMISSIONS,
-  PendingWriteItem,
-  LocalBackupStatus,
-  StudentBackupStatus,
-  ParcelBackupStatus,
-  ParcelBackupSummary,
-  UserParcelBackupStat,
-  FirestoreConnectionStatus,
+  SupabaseWriteItem,
+  SupabaseParcelSummary,
+  UserParcelStat,
+  SupabaseConnectionStatus,
   QuotaMetrics,
   getRelativeDateString,
   extractParcelLocalYMD,
   isUnknownOwnerParcel,
   StudentParcelCountStats,
-  WEEKLY_PARCEL_WARNING_LIMIT,
   ParcelRateLimitConfig,
   DEFAULT_PARCEL_RATE_LIMIT_CONFIG,
   WriteTargetMode,
-  FirestoreQuotaStatus,
-  isStudentOverConfiguredLimit,
+  SupabaseStatusCheck,
   getStudentParcelCountStats,
   buildAllStudentParcelStats,
   formatStudentCode,
@@ -42,56 +37,23 @@ import {
   onAuthStateChanged,
   signInWithGooglePopup,
   signOutFirebaseUser,
-  initializeDefaultCloudDataIfEmpty,
-  fetchCloudDataDirectly,
-  uploadPendingWritesBatchToFirestore,
-  findStudentInFirestoreFallback,
-  findParcelInFirestoreFallback,
-  checkFirestoreQuotaStatus,
-  isFirestoreQuotaError,
+  fetchCloudDataDirectly as fetchLegacyFirestoreDataDirectly,
+} from '../services/firebase';
+import {
+  initializeDefaultSupabaseDataIfEmpty,
+  fetchCloudDataFromSupabase,
+  saveBatchDirectlyToSupabase,
+  findStudentInSupabaseFallback,
+  findParcelInSupabaseFallback,
+  checkSupabaseStatus,
+  checkSupabaseDetailedStatus,
+  SupabaseConnectionDetails,
+  isSupabaseTableMissingError,
+  SUPABASE_SETUP_SQL,
   sanitizeId,
   AUTO_CLOUD_EMAIL,
   AUTO_CLOUD_OWNER_ID,
-} from '../services/firebase';
-import {
-  loadLocalBackupStore,
-  saveStagedWritesToLocalFile,
-  saveLocalSearchCache,
-  clearStagedBackupAfterUpload,
-  saveAllStudentsToBackupDb,
-  loadAllStudentsFromBackupDb,
-  saveAllParcelsToBackupDb,
-  loadAllParcelsFromBackupDb,
-  getLocalTodayYMD,
-  getNextMidnightScheduleInfo,
-  LOCAL_STAGING_STORAGE_KEY,
-  LocalCacheSnapshot,
-} from '../services/localBackupStore';
-
-// รายการคีย์ LocalStorage เก่าที่ต้องลบทิ้งเมื่ออัปเกรดโครงสร้างใหม่
-const STORAGE_KEYS_TO_PURGE = [
-  'spms_students_cache_v1',
-  'spms_parcels_cache_v1',
-  'spms_pending_writes_v1',
-  'spms_quota_metrics_v1',
-  'spms_students_prod_v2',
-  'spms_parcels_prod_v2',
-  'spms_pending_writes_prod_v2',
-  'spms_quota_metrics_prod_v2',
-  'spms_sync_mode_clean_v3',
-  'spms_students_clean_v3',
-  'spms_parcels_clean_v3',
-  'spms_members_clean_v1',
-  'spms_role_permissions_clean_v1',
-  'spms_pending_writes_clean_v3',
-  'spms_quota_metrics_clean_v3',
-  'spms_sync_mode_auto_v4',
-];
-
-// เก็บเฉพาะรหัสสมาชิกที่ล็อกอินค้างไว้ เพื่อไม่ให้ผู้ใช้งานถูกเด้งออกจากระบบทุกครั้งที่รีเฟรชหน้าจอ
-const SESSION_MEMBER_KEY = 'spms_session_member_id_v2';
-
-export type SyncMode = 'staged_midnight_sync';
+} from '../services/supabase';
 
 export interface NewParcelInput {
   trackingNumber: string;
@@ -176,29 +138,28 @@ interface ParcelSystemContextValue {
     customReasons?: string[]
   ) => void;
   closeWeeklyWarningPopup: () => void;
-  pendingWrites: PendingWriteItem[];
-  localBackupStatus: LocalBackupStatus;
-  studentBackupStatus: StudentBackupStatus;
-  parcelBackupStatus: ParcelBackupStatus;
-  parcelBackupSummary: ParcelBackupSummary;
-  firestoreConnectionStatus: FirestoreConnectionStatus;
-  lastQuotaCheckAt: string | null;
+  supabaseParcelSummary: SupabaseParcelSummary;
+  supabaseConnectionStatus: SupabaseConnectionStatus;
+  lastConnectionCheckAt: string | null;
   lastWriteMode: WriteTargetMode;
   quotaMetrics: QuotaMetrics;
-  syncMode: SyncMode;
   isSyncing: boolean;
-  quotaExceeded: boolean;
+  supabaseSchemaMissing: boolean;
+  supabaseConnectionDetails: SupabaseConnectionDetails | null;
+  isCheckingSupabaseStatus: boolean;
   syncProgress: { completed: number; total: number } | null;
   toastMessage: { text: string; type: 'success' | 'info' | 'warning' | 'error' } | null;
   clearToast: () => void;
-  setSyncMode: (mode: SyncMode) => void;
-  recheckFirestoreQuota: () => Promise<FirestoreQuotaStatus>;
-  exportLocalStoragePendingJson: () => void;
-  exportLocalStorageParcelsCsv: () => void;
+  recheckSupabaseStatus: () => Promise<SupabaseStatusCheck>;
+  refreshSupabaseConnectionStatus: (showToastNotification?: boolean) => Promise<SupabaseConnectionDetails>;
+  copySupabaseSetupSql: () => Promise<boolean>;
+  migrateAllDataToSupabase: () => Promise<void>;
+  exportParcelsJson: () => void;
+  exportParcelsCsv: () => void;
   lookupStudentByCode: (code: string) => Student | undefined;
   lookupStudentWithCloudFallback: (code: string) => Promise<{
     student: Student | undefined;
-    source: 'local' | 'firebase' | 'none';
+    source: 'memory' | 'supabase' | 'none';
   }>;
   searchStudentsLocal: (keyword: string) => Student[];
   searchParcelsLocal: (keyword: string, statusFilter?: string, dormFilter?: string, dateFilter?: string) => Parcel[];
@@ -207,7 +168,7 @@ interface ParcelSystemContextValue {
     statusFilter?: string,
     dormFilter?: string,
     dateFilter?: string
-  ) => Promise<{ parcels: Parcel[]; source: 'local' | 'firebase' }>;
+  ) => Promise<{ parcels: Parcel[]; source: 'memory' | 'supabase' }>;
   recordLocalSearchSaving: () => void;
   addInboundParcel: (input: NewParcelInput) => Promise<Parcel & { writeMode?: WriteTargetMode }>;
   updateParcelStatus: (parcelId: string, newStatus: ParcelStatus, note?: string, deliveredDate?: string) => Promise<void>;
@@ -222,20 +183,12 @@ interface ParcelSystemContextValue {
     backupData: { students?: Student[]; parcels?: Parcel[] },
     replaceAll?: boolean
   ) => Promise<{ studentsCount: number; parcelsCount: number }>;
-  bulkImportStudents: (newStudents: Omit<Student, 'ownerId' | 'createdAt' | 'updatedAt'>[], stageForCloudSync?: boolean) => Promise<number>;
+  bulkImportStudents: (newStudents: Omit<Student, 'ownerId' | 'createdAt' | 'updatedAt'>[]) => Promise<number>;
   upsertSingleStudent: (student: Omit<Student, 'ownerId' | 'createdAt' | 'updatedAt'>) => Promise<void>;
   deleteStudent: (studentCode: string) => Promise<void>;
   bulkDeleteStudents: (studentCodes: string[], targetLabel?: string) => Promise<void>;
   clearAllStudents: () => Promise<void>;
-  backupAllStudentsNow: () => Promise<StudentBackupStatus>;
-  restoreStudentsFromBackupDb: () => Promise<number>;
-  stageAllBackupParcelsForUpload: () => Promise<number>;
-  uploadAllBackupParcelsToFirebaseNow: () => Promise<void>;
-  refreshFromLocalBackupServer: () => Promise<void>;
-  syncPendingToFirebase: () => Promise<void>;
-  uploadStagedToFirebaseNow: () => Promise<void>;
-  pullFromFirebaseToLocal: () => Promise<void>;
-  clearAllLocalData: () => void;
+  refreshFromSupabase: () => Promise<void>;
   signInGoogle: () => Promise<void>;
   signOutUser: () => Promise<void>;
 }
@@ -251,16 +204,6 @@ const AUTO_BOUND_USER = {
   isAnonymous: false,
 } as unknown as User;
 
-function purgeLocalMachineData(): void {
-  try {
-    for (const key of STORAGE_KEYS_TO_PURGE) {
-      localStorage.removeItem(key);
-    }
-  } catch (err) {
-    console.warn('Local storage purge warning:', err);
-  }
-}
-
 export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [firebaseAuthUser, setFirebaseAuthUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(true);
@@ -268,89 +211,34 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const user = useMemo<User>(() => firebaseAuthUser || AUTO_BOUND_USER, [firebaseAuthUser]);
   const connectedEmail = AUTO_CLOUD_EMAIL;
 
-  // ข้อมูลทั้งหมดโหลดโดยตรงจาก Firestore ไม่เก็บไว้ใน LocalStorage บนเครื่อง
+  // ข้อมูลทั้งหมดโหลดและบันทึกโดยตรงกับ Supabase (ไม่มีการจัดเก็บใน localStorage หรือฐานข้อมูลในเครื่อง)
   const [students, setStudents] = useState<Student[]>([]);
   const [parcels, setParcels] = useState<Parcel[]>([]);
   const [members, setMembers] = useState<Member[]>(INITIAL_MEMBERS);
   const [rolePermissions, setRolePermissions] = useState<RolePermission[]>(INITIAL_ROLE_PERMISSIONS);
-  const [parcelRateLimitConfig, setParcelRateLimitConfig] = useState<ParcelRateLimitConfig>(() => {
-    try {
-      const saved = localStorage.getItem('spms_rate_limit_config_v1');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object') {
-          return {
-            daily: {
-              enabled: Boolean(parsed.daily?.enabled),
-              limit: Math.max(0, Number(parsed.daily?.limit) || 1),
-            },
-            weekly: {
-              enabled: Boolean(parsed.weekly?.enabled),
-              limit: Math.max(0, Number(parsed.weekly?.limit) || 3),
-            },
-            monthly: {
-              enabled: Boolean(parsed.monthly?.enabled),
-              limit: Math.max(0, Number(parsed.monthly?.limit) || 10),
-            },
-          };
-        }
-      }
-    } catch {
-      // fallback
-    }
-    return DEFAULT_PARCEL_RATE_LIMIT_CONFIG;
-  });
+  const [parcelRateLimitConfig, setParcelRateLimitConfig] = useState<ParcelRateLimitConfig>(
+    DEFAULT_PARCEL_RATE_LIMIT_CONFIG
+  );
 
-  // รหัสสมาชิกปัจจุบันสำหรับการล็อกอิน
-  const [currentMemberId, setCurrentMemberId] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(SESSION_MEMBER_KEY) || null;
-    } catch {
-      return null;
-    }
-  });
+  // รหัสสมาชิกปัจจุบันสำหรับการล็อกอิน (เก็บใน State ของหน้าเว็บเท่านั้น ไม่เก็บลง localStorage)
+  const [currentMemberId, setCurrentMemberId] = useState<string | null>(null);
 
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [quotaExceeded, setQuotaExceeded] = useState<boolean>(false);
-  const [firestoreConnectionStatus, setFirestoreConnectionStatus] =
-    useState<FirestoreConnectionStatus>('connected');
-  const [lastQuotaCheckAt, setLastQuotaCheckAt] = useState<string | null>(null);
-  const [lastWriteMode, setLastWriteMode] = useState<WriteTargetMode>('firestore_direct');
+  const [supabaseSchemaMissing, setSupabaseSchemaMissing] = useState<boolean>(false);
+  const [supabaseConnectionDetails, setSupabaseConnectionDetails] =
+    useState<SupabaseConnectionDetails | null>(null);
+  const [isCheckingSupabaseStatus, setIsCheckingSupabaseStatus] = useState<boolean>(false);
+  const [supabaseConnectionStatus, setSupabaseConnectionStatus] =
+    useState<SupabaseConnectionStatus>('connected');
+  const [lastConnectionCheckAt, setLastConnectionCheckAt] = useState<string | null>(null);
+  const [lastWriteMode, setLastWriteMode] = useState<WriteTargetMode>('supabase_direct');
   const [syncProgress, setSyncProgress] = useState<{ completed: number; total: number } | null>(null);
-  const hasShownQuotaNoticeRef = useRef<boolean>(false);
   const hasBootstrappedRef = useRef<boolean>(false);
   const isUploadingRef = useRef<boolean>(false);
-  const lastQuotaProbeTimeRef = useRef<number>(0);
-  const quotaExceededRef = useRef<boolean>(false);
-  const firestoreConnectionStatusRef = useRef<FirestoreConnectionStatus>('connected');
-
-  const [pendingWrites, setPendingWrites] = useState<PendingWriteItem[]>([]);
-  const [localBackupStatus, setLocalBackupStatus] = useState<LocalBackupStatus>(() => ({
-    serverFileActive: false,
-    stagingFileExists: false,
-    stagingFilePath: 'data/pending-upload-backup.json',
-    cacheFilePath: 'data/local-search-cache.json',
-    stagedCount: 0,
-    lastAutoUploadDate: null,
-    lastUploadedAt: null,
-    nextScheduledUploadAt: getNextMidnightScheduleInfo().isoString,
-  }));
-  const [studentBackupStatus, setStudentBackupStatus] = useState<StudentBackupStatus>({
-    count: 0,
-    updatedAt: null,
-    filePath: 'data/students-backup.json',
-    serverFileActive: false,
-    indexedDbActive: false,
-    source: null,
-  });
-  const [parcelBackupStatus, setParcelBackupStatus] = useState<ParcelBackupStatus>({
-    count: 0,
-    updatedAt: null,
-    filePath: 'data/parcels-backup.json',
-    serverFileActive: false,
-    indexedDbActive: false,
-    source: null,
-  });
+  const lastConnectionProbeTimeRef = useRef<number>(0);
+  const lastRefreshTimeRef = useRef<number>(0);
+  const supabaseSchemaMissingRef = useRef<boolean>(false);
+  const supabaseConnectionStatusRef = useRef<SupabaseConnectionStatus>('connected');
 
   const [toastMessage, setToastMessage] = useState<{
     text: string;
@@ -363,24 +251,17 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const [quotaMetrics, setQuotaMetrics] = useState<QuotaMetrics>({
     localLookupsSaved: 0,
-    batchedWritesQueued: 0,
-    firestoreReadsUsed: 0,
-    firestoreWritesUsed: 0,
+    supabaseReadsUsed: 0,
+    supabaseWritesUsed: 0,
     lastSyncedAt: null,
   });
 
-  // โหมดพักข้อมูลในไฟล์สำรองของระบบก่อน แล้วอัปโหลดขึ้น Firebase อัตโนมัติเวลา 00.00 น. ทุกวัน
-  const syncMode: SyncMode = 'staged_midnight_sync';
-
-  // Refs สำหรับเข้าถึงข้อมูลล่าสุดภายใน callbacks / timers
   const studentsRef = useRef<Student[]>(students);
   const parcelsRef = useRef<Parcel[]>(parcels);
   const membersRef = useRef<Member[]>(members);
   const currentMemberIdRef = useRef<string | null>(currentMemberId);
   const rolePermissionsRef = useRef<RolePermission[]>(rolePermissions);
   const rateLimitRef = useRef<ParcelRateLimitConfig>(parcelRateLimitConfig);
-  const pendingWritesRef = useRef<PendingWriteItem[]>(pendingWrites);
-  const localBackupStatusRef = useRef<LocalBackupStatus>(localBackupStatus);
 
   useEffect(() => {
     studentsRef.current = students;
@@ -400,12 +281,14 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
   useEffect(() => {
     rateLimitRef.current = parcelRateLimitConfig;
   }, [parcelRateLimitConfig]);
+
   useEffect(() => {
-    pendingWritesRef.current = pendingWrites;
-  }, [pendingWrites]);
+    supabaseSchemaMissingRef.current = supabaseSchemaMissing;
+  }, [supabaseSchemaMissing]);
+
   useEffect(() => {
-    localBackupStatusRef.current = localBackupStatus;
-  }, [localBackupStatus]);
+    supabaseConnectionStatusRef.current = supabaseConnectionStatus;
+  }, [supabaseConnectionStatus]);
 
   const getCurrentActorAttribution = useCallback(() => {
     const activeId = currentMemberIdRef.current;
@@ -415,7 +298,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     if (!matched) {
       return {
         memberId: 'shared_system',
-        name: 'ระบบสำรองกลาง',
+        name: 'ผู้ใช้งานระบบ',
         role: 'ระบบ',
       };
     }
@@ -441,7 +324,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     return () => clearTimeout(timer);
   }, [toastMessage]);
 
-  // ติดตามสถานะ Firebase Auth
+  // ติดตามสถานะ Firebase Auth (เฉพาะกรณีผู้ใช้ล็อกอินด้วย Google)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setFirebaseAuthUser(currentUser);
@@ -450,85 +333,41 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     return () => unsubscribe();
   }, []);
 
-  // บันทึกเฉพาะ Session ID ของสมาชิกที่ล็อกอินอยู่
-  useEffect(() => {
-    try {
-      if (currentMemberId) {
-        localStorage.setItem(SESSION_MEMBER_KEY, currentMemberId);
-      } else {
-        localStorage.removeItem(SESSION_MEMBER_KEY);
-      }
-    } catch {
-      // ignore
-    }
-  }, [currentMemberId]);
-
-  // ล้างคีย์เก่าที่เลิกใช้งานแล้ว
-  useEffect(() => {
-    purgeLocalMachineData();
-  }, []);
-
-  useEffect(() => {
-    quotaExceededRef.current = quotaExceeded;
-  }, [quotaExceeded]);
-
-  useEffect(() => {
-    firestoreConnectionStatusRef.current = firestoreConnectionStatus;
-  }, [firestoreConnectionStatus]);
-
-  const handleQuotaExceeded = useCallback((forceToast = false) => {
-    setQuotaExceeded(true);
-    quotaExceededRef.current = true;
-    setFirestoreConnectionStatus('quota_exceeded');
-    firestoreConnectionStatusRef.current = 'quota_exceeded';
-    setLastWriteMode('local_storage_quota_full');
-    setIsSyncing(false);
-    if (forceToast || !hasShownQuotaNoticeRef.current) {
-      hasShownQuotaNoticeRef.current = true;
-      showToast(
-        'โควตา Firestore เต็มแล้ว — ระบบบันทึกลง localStorage อัตโนมัติ สามารถกดส่งออกไฟล์หรืออัปโหลดเข้า Firestore ได้ภายหลัง',
-        'warning'
-      );
-    }
-  }, [showToast]);
-
-  // ตรวจสอบสถานะ Quota ของ Firestore (มีแคช 45 วินาทีเมื่อโควตาปกติ เพื่อไม่ให้เปลือง Read ตอนสแกนต่อเนื่อง)
-  const checkAndSyncQuotaStatus = useCallback(
-    async (force = false): Promise<FirestoreQuotaStatus> => {
+  // ตรวจสอบสถานะการเชื่อมต่อ Supabase
+  const checkAndSyncConnectionStatus = useCallback(
+    async (force = false): Promise<SupabaseStatusCheck> => {
       const nowMs = Date.now();
-      const cacheTtlMs = quotaExceededRef.current ? 180_000 : 45_000;
-      if (!force && lastQuotaProbeTimeRef.current > 0 && nowMs - lastQuotaProbeTimeRef.current < cacheTtlMs) {
+      const cacheTtlMs = supabaseSchemaMissingRef.current ? 10_000 : 30_000;
+      if (!force && lastConnectionProbeTimeRef.current > 0 && nowMs - lastConnectionProbeTimeRef.current < cacheTtlMs) {
         return {
-          available: !quotaExceededRef.current && firestoreConnectionStatusRef.current === 'connected',
-          quotaExceeded: quotaExceededRef.current,
-          connectionFailed: firestoreConnectionStatusRef.current === 'offline_fallback',
-          checkedAt: new Date(lastQuotaProbeTimeRef.current).toISOString(),
+          available:
+            !supabaseSchemaMissingRef.current &&
+            supabaseConnectionStatusRef.current === 'connected',
+          connectionFailed: supabaseConnectionStatusRef.current !== 'connected',
+          schemaMissing: supabaseSchemaMissingRef.current,
+          checkedAt: new Date(lastConnectionProbeTimeRef.current).toISOString(),
         };
       }
 
-      const status = await checkFirestoreQuotaStatus();
-      lastQuotaProbeTimeRef.current = Date.now();
-      setLastQuotaCheckAt(status.checkedAt);
+      const status = await checkSupabaseStatus();
+      lastConnectionProbeTimeRef.current = Date.now();
+      setLastConnectionCheckAt(status.checkedAt);
 
-      if (status.quotaExceeded) {
-        setQuotaExceeded(true);
-        quotaExceededRef.current = true;
-        setFirestoreConnectionStatus('quota_exceeded');
-        firestoreConnectionStatusRef.current = 'quota_exceeded';
-        setLastWriteMode('local_storage_quota_full');
+      if (status.schemaMissing) {
+        setSupabaseSchemaMissing(true);
+        supabaseSchemaMissingRef.current = true;
+        setSupabaseConnectionStatus('schema_missing');
+        supabaseConnectionStatusRef.current = 'schema_missing';
       } else if (status.connectionFailed) {
-        setQuotaExceeded(false);
-        quotaExceededRef.current = false;
-        setFirestoreConnectionStatus('offline_fallback');
-        firestoreConnectionStatusRef.current = 'offline_fallback';
-        setLastWriteMode('local_storage_offline');
+        setSupabaseSchemaMissing(false);
+        supabaseSchemaMissingRef.current = false;
+        setSupabaseConnectionStatus('disconnected');
+        supabaseConnectionStatusRef.current = 'disconnected';
       } else {
-        setQuotaExceeded(false);
-        quotaExceededRef.current = false;
-        hasShownQuotaNoticeRef.current = false;
-        setFirestoreConnectionStatus('connected');
-        firestoreConnectionStatusRef.current = 'connected';
-        setLastWriteMode('firestore_direct');
+        setSupabaseSchemaMissing(false);
+        supabaseSchemaMissingRef.current = false;
+        setSupabaseConnectionStatus('connected');
+        supabaseConnectionStatusRef.current = 'connected';
       }
 
       return status;
@@ -536,843 +375,227 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     []
   );
 
-  // ฟังก์ชันรวมรายการที่รออัปโหลดในไฟล์สำรองเข้ากับข้อมูลแคชปัจจุบัน
-  const applyPendingItemsToSnapshot = useCallback(
-    (
-      base: {
-        students: Student[];
-        parcels: Parcel[];
-        members: Member[];
-        rolePermissions: RolePermission[];
-        rateLimitConfig: ParcelRateLimitConfig;
-      },
-      items: PendingWriteItem[]
-    ) => {
-      const studentMapLocal = new Map<string, Student>();
-      for (const s of base.students) studentMapLocal.set(s.studentCode, s);
-
-      const parcelMapLocal = new Map<string, Parcel>();
-      for (const p of base.parcels) parcelMapLocal.set(p.id || p.trackingNumber, p);
-
-      const memberMapLocal = new Map<string, Member>();
-      for (const m of base.members) memberMapLocal.set(m.memberId, m);
-
-      const roleMapLocal = new Map<string, RolePermission>();
-      for (const rp of base.rolePermissions) roleMapLocal.set(rp.roleId, rp);
-
-      let nextRateConfig = base.rateLimitConfig;
-
-      for (const item of items) {
-        if (item.collection === 'students') {
-          if (item.action === 'delete') studentMapLocal.delete(item.docId);
-          else if (item.data) studentMapLocal.set(item.docId, item.data as Student);
-        } else if (item.collection === 'parcels') {
-          if (item.action === 'delete') parcelMapLocal.delete(item.docId);
-          else if (item.data) parcelMapLocal.set(item.docId, item.data as Parcel);
-        } else if (item.collection === 'members') {
-          if (item.action === 'delete') memberMapLocal.delete(item.docId);
-          else if (item.data) memberMapLocal.set(item.docId, item.data as Member);
-        } else if (item.collection === 'role_permissions') {
-          if (item.action === 'delete') roleMapLocal.delete(item.docId);
-          else if (item.data) roleMapLocal.set(item.docId, item.data as RolePermission);
-        } else if (item.collection === 'system_settings' && item.data) {
-          nextRateConfig = item.data as ParcelRateLimitConfig;
-        }
+  /**
+   * บันทึกหรือลบข้อมูลลง Supabase โดยตรงทันที (ไม่มีการบันทึกลง localStorage)
+   */
+  const commitWritesDirectlyToSupabase = useCallback(
+    async (
+      items: SupabaseWriteItem[],
+      showProgress = false
+    ): Promise<{
+      mode: WriteTargetMode;
+      uploadedCount: number;
+      schemaMissing?: boolean;
+      errorMessage?: string;
+    }> => {
+      if (items.length === 0) {
+        return { mode: 'supabase_direct', uploadedCount: 0 };
       }
 
-      return {
-        students: Array.from(studentMapLocal.values()).sort((a, b) => a.seqNo - b.seqNo),
-        parcels: Array.from(parcelMapLocal.values()).sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        ),
-        members: Array.from(memberMapLocal.values()),
-        rolePermissions: Array.from(roleMapLocal.values()),
-        rateLimitConfig: nextRateConfig,
-      };
+      try {
+        if (showProgress) {
+          setSyncProgress({ completed: 0, total: items.length });
+        }
+        const result = await saveBatchDirectlyToSupabase(
+          items,
+          AUTO_CLOUD_OWNER_ID,
+          showProgress ? (completed, total) => setSyncProgress({ completed, total }) : undefined
+        );
+
+        if (!result.connectionFailed && !result.schemaMissing) {
+          const nowIso = new Date().toISOString();
+          setSupabaseSchemaMissing(false);
+          supabaseSchemaMissingRef.current = false;
+          setSupabaseConnectionStatus('connected');
+          supabaseConnectionStatusRef.current = 'connected';
+          setLastWriteMode('supabase_direct');
+          setLastConnectionCheckAt(nowIso);
+          lastConnectionProbeTimeRef.current = Date.now();
+
+          setQuotaMetrics((prev) => ({
+            ...prev,
+            supabaseWritesUsed: prev.supabaseWritesUsed + result.uploadedCount,
+            lastSyncedAt: nowIso,
+          }));
+
+          return { mode: 'supabase_direct', uploadedCount: result.uploadedCount };
+        }
+
+        if (result.schemaMissing) {
+          setSupabaseSchemaMissing(true);
+          supabaseSchemaMissingRef.current = true;
+          setSupabaseConnectionStatus('schema_missing');
+          supabaseConnectionStatusRef.current = 'schema_missing';
+        } else {
+          setSupabaseConnectionStatus('disconnected');
+          supabaseConnectionStatusRef.current = 'disconnected';
+        }
+        setLastWriteMode('supabase_error');
+        return {
+          mode: 'supabase_error',
+          uploadedCount: result.uploadedCount,
+          schemaMissing: result.schemaMissing,
+          errorMessage: result.errorMessage,
+        };
+      } catch (err) {
+        const schemaMissing = isSupabaseTableMissingError(err);
+        if (schemaMissing) {
+          setSupabaseSchemaMissing(true);
+          supabaseSchemaMissingRef.current = true;
+          setSupabaseConnectionStatus('schema_missing');
+          supabaseConnectionStatusRef.current = 'schema_missing';
+        } else {
+          setSupabaseConnectionStatus('disconnected');
+          supabaseConnectionStatusRef.current = 'disconnected';
+        }
+        setLastWriteMode('supabase_error');
+        return {
+          mode: 'supabase_error',
+          uploadedCount: 0,
+          schemaMissing,
+          errorMessage: err instanceof Error ? err.message : String(err),
+        };
+      } finally {
+        if (showProgress) {
+          setSyncProgress(null);
+        }
+      }
     },
     []
   );
 
-  // บันทึกรายการเปลี่ยนแปลงลงไฟล์สำรองรออัพโหลด (data/pending-upload-backup.json + data/parcels-backup.json + localStorage) ก่อนขึ้น Firebase
-  const stagePendingWrites = useCallback(
-    async (
-      newItems: PendingWriteItem[],
-      nextCache?: {
-        students?: Student[];
-        parcels?: Parcel[];
-        members?: Member[];
-        rolePermissions?: RolePermission[];
-        rateLimitConfig?: ParcelRateLimitConfig;
-      },
-      options?: {
-        replaceCacheParcels?: boolean;
-        replacePending?: boolean;
-      }
-    ) => {
-      const mergedMap = new Map<string, PendingWriteItem>();
-      if (!options?.replacePending) {
-        for (const item of pendingWritesRef.current) {
-          mergedMap.set(`${item.collection}:${item.docId}`, item);
-        }
-      }
-      for (const item of newItems) {
-        mergedMap.set(`${item.collection}:${item.docId}`, item);
-      }
-      const nextPending = Array.from(mergedMap.values());
-      pendingWritesRef.current = nextPending;
-      setPendingWrites(nextPending);
-      setQuotaMetrics((prev) => ({
-        ...prev,
-        batchedWritesQueued: nextPending.length,
-      }));
-
-      const cachePayload = {
-        students: nextCache?.students ?? studentsRef.current,
-        parcels: nextCache?.parcels ?? parcelsRef.current,
-        members: nextCache?.members ?? membersRef.current,
-        rolePermissions: nextCache?.rolePermissions ?? rolePermissionsRef.current,
-        rateLimitConfig: nextCache?.rateLimitConfig ?? rateLimitRef.current,
-        lastSyncedAt: localBackupStatusRef.current.lastUploadedAt,
-        lastAutoUploadDate: localBackupStatusRef.current.lastAutoUploadDate,
-        lastUploadedAt: localBackupStatusRef.current.lastUploadedAt,
-      };
-
-      const res = await saveStagedWritesToLocalFile(nextPending, cachePayload, {
-        appendItems: newItems,
-        replacePending: options?.replacePending,
-        replaceCacheParcels: options?.replaceCacheParcels,
-      });
-
-      const finalPending =
-        Array.isArray(res.mergedPendingWrites) && res.mergedPendingWrites.length > 0
-          ? res.mergedPendingWrites
-          : options?.replacePending
-          ? nextPending
-          : nextPending;
-
-      if (finalPending !== nextPending) {
-        pendingWritesRef.current = finalPending;
-        setPendingWrites(finalPending);
-        setQuotaMetrics((prev) => ({
-          ...prev,
-          batchedWritesQueued: finalPending.length,
-        }));
-      }
-
-      if (finalPending.length > nextPending.length && !options?.replaceCacheParcels) {
-        const appliedWithServer = applyPendingItemsToSnapshot(
-          {
-            students: cachePayload.students,
-            parcels: cachePayload.parcels,
-            members: cachePayload.members,
-            rolePermissions: cachePayload.rolePermissions,
-            rateLimitConfig: cachePayload.rateLimitConfig,
-          },
-          finalPending
-        );
-        setParcels(appliedWithServer.parcels);
-        setParcelBackupStatus((prev) => ({
-          ...prev,
-          count: appliedWithServer.parcels.length,
-          updatedAt: new Date().toISOString(),
-          serverFileActive: res.serverFileActive || prev.serverFileActive,
-          source: 'multi_user_staged_merge',
-        }));
-      } else if (nextCache?.parcels) {
-        setParcelBackupStatus((prev) => ({
-          ...prev,
-          count: nextCache.parcels!.length,
-          updatedAt: new Date().toISOString(),
-          serverFileActive: res.serverFileActive || prev.serverFileActive,
-          source: 'auto_stage_parcel_backup',
-        }));
-      }
-
-      setLocalBackupStatus((prev) => ({
-        ...prev,
-        serverFileActive: res.serverFileActive,
-        stagingFileExists: res.stagingFileExists,
-        stagedCount: finalPending.length,
-        nextScheduledUploadAt: getNextMidnightScheduleInfo().isoString,
-      }));
-      if (nextCache?.students) {
-        setStudentBackupStatus((prev) => ({
-          ...prev,
-          count: nextCache.students!.length,
-          updatedAt: new Date().toISOString(),
-          serverFileActive: res.serverFileActive || prev.serverFileActive,
-          source: 'auto_stage_backup',
-        }));
-      }
-    },
-    [applyPendingItemsToSnapshot]
-  );
-
-  /**
-   * บันทึกข้อมูลลง Firestore โดยตรงทันที (ไม่ต้องกดตรวจโควตา):
-   * - หากบันทึกสำเร็จ: อัปเดตแคชในเครื่องและล้างคิวที่ซ้ำกันใน localStorage
-   * - หาก Quota เต็ม หรือเชื่อมต่อไม่ได้: แจ้งเตือนผู้ใช้ทันทีและบันทึกลง localStorage เพื่อให้ส่งออกหรืออัปโหลดเข้า Firestore ภายหลัง
-   */
-  const commitWritesDirectOrFallbackToLocalStorage = useCallback(
-    async (
-      items: PendingWriteItem[],
-      nextCache?: {
-        students?: Student[];
-        parcels?: Parcel[];
-        members?: Member[];
-        rolePermissions?: RolePermission[];
-        rateLimitConfig?: ParcelRateLimitConfig;
-      },
-      options?: {
-        replaceCacheParcels?: boolean;
-        replacePending?: boolean;
-      }
-    ): Promise<{ mode: WriteTargetMode; uploadedCount: number }> => {
-      let uploadedCount = 0;
-
-      if (items.length > 0) {
-        try {
-          const result = await uploadPendingWritesBatchToFirestore(
-            items,
-            AUTO_CLOUD_OWNER_ID
-          );
-          uploadedCount = result.uploadedCount;
-
-          if (!result.quotaExceeded && !result.connectionFailed) {
-            const nowIso = new Date().toISOString();
-            const now = new Date();
-            setQuotaExceeded(false);
-            quotaExceededRef.current = false;
-            hasShownQuotaNoticeRef.current = false;
-            setFirestoreConnectionStatus('connected');
-            firestoreConnectionStatusRef.current = 'connected';
-            setLastWriteMode('firestore_direct');
-            setLastQuotaCheckAt(nowIso);
-            lastQuotaProbeTimeRef.current = Date.now();
-
-            // หากใน localStorage เคยมีคิวซ้ำกับ docId ที่เพิ่งเขียนตรงสำเร็จ ให้เคลียร์เฉพาะคีย์นั้นออก
-            const uploadedKeys = new Set(items.map((it) => `${it.collection}:${it.docId}`));
-            const hasOverlapInQueue = pendingWritesRef.current.some((p) =>
-              uploadedKeys.has(`${p.collection}:${p.docId}`)
-            );
-            let remainingPendingCount = pendingWritesRef.current.length;
-            if (hasOverlapInQueue) {
-              const clearRes = await clearStagedBackupAfterUpload({
-                lastAutoUploadDate: localBackupStatusRef.current.lastAutoUploadDate,
-                lastUploadedAt: nowIso,
-                uploadedKeys: Array.from(uploadedKeys),
-              });
-              const remaining = clearRes.remainingPending || [];
-              pendingWritesRef.current = remaining;
-              setPendingWrites(remaining);
-              remainingPendingCount = remaining.length;
-              setLocalBackupStatus((prev) => ({
-                ...prev,
-                stagingFileExists: remaining.length > 0,
-                stagedCount: remaining.length,
-                lastUploadedAt: nowIso,
-              }));
-            }
-
-            setQuotaMetrics((prev) => ({
-              ...prev,
-              batchedWritesQueued: remainingPendingCount,
-              firestoreWritesUsed: prev.firestoreWritesUsed + result.uploadedCount,
-              lastSyncedAt: nowIso,
-            }));
-
-            // อัปเดตแคชในเครื่อง/IndexedDB เพื่อให้การค้นหายังเป็นแบบ Zero-Read
-            const cacheUpdate: Partial<LocalCacheSnapshot> = {
-              ...(nextCache?.students !== undefined ? { students: nextCache.students } : {}),
-              ...(nextCache?.parcels !== undefined ? { parcels: nextCache.parcels } : {}),
-              ...(nextCache?.members !== undefined ? { members: nextCache.members } : {}),
-              ...(nextCache?.rolePermissions !== undefined
-                ? { rolePermissions: nextCache.rolePermissions }
-                : {}),
-              ...(nextCache?.rateLimitConfig !== undefined
-                ? { rateLimitConfig: nextCache.rateLimitConfig }
-                : {}),
-              lastSyncedAt: nowIso,
-              lastUploadedAt: nowIso,
-            };
-            await saveLocalSearchCache(cacheUpdate);
-            if (options?.replaceCacheParcels && nextCache?.parcels) {
-              await saveAllParcelsToBackupDb(
-                nextCache.parcels,
-                'firestore_direct_sync',
-                true
-              );
-            }
-            if (nextCache?.parcels) {
-              setParcelBackupStatus((prev) => ({
-                ...prev,
-                count: nextCache.parcels!.length,
-                updatedAt: nowIso,
-                source: 'firestore_direct_sync',
-              }));
-            }
-            if (nextCache?.students) {
-              setStudentBackupStatus((prev) => ({
-                ...prev,
-                count: nextCache.students!.length,
-                updatedAt: nowIso,
-                source: 'firestore_direct_sync',
-              }));
-            }
-            setLocalBackupStatus((prev) => ({
-              ...prev,
-              lastUploadedAt: nowIso,
-              nextScheduledUploadAt: getNextMidnightScheduleInfo(now).isoString,
-            }));
-
-            return { mode: 'firestore_direct', uploadedCount: result.uploadedCount };
-          }
-
-          if (result.quotaExceeded) {
-            handleQuotaExceeded(false);
-            lastQuotaProbeTimeRef.current = Date.now();
-            setLastQuotaCheckAt(new Date().toISOString());
-          } else {
-            setFirestoreConnectionStatus('offline_fallback');
-            firestoreConnectionStatusRef.current = 'offline_fallback';
-          }
-        } catch (err) {
-          if (isFirestoreQuotaError(err)) {
-            handleQuotaExceeded(false);
-            lastQuotaProbeTimeRef.current = Date.now();
-            setLastQuotaCheckAt(new Date().toISOString());
-          } else {
-            setFirestoreConnectionStatus('offline_fallback');
-            firestoreConnectionStatusRef.current = 'offline_fallback';
-          }
-        }
-      }
-
-      // Quota เต็ม หรือไม่สามารถเชื่อมต่อ Firestore ได้ -> บันทึกรายการที่ยังไม่ได้อัปโหลดลง localStorage ทันที
-      const remainingItems =
-        uploadedCount > 0 && uploadedCount < items.length
-          ? items.slice(uploadedCount)
-          : items;
-      await stagePendingWrites(remainingItems, nextCache, options);
-      const fallbackMode: WriteTargetMode = quotaExceededRef.current
-        ? 'local_storage_quota_full'
-        : 'local_storage_offline';
-      setLastWriteMode(fallbackMode);
-      return { mode: fallbackMode, uploadedCount };
-    },
-    [handleQuotaExceeded, stagePendingWrites]
-  );
-
-  // ดึงข้อมูลจาก Firebase (ถ้าเชื่อมต่อไม่ได้หรือ Quota เต็ม ให้สลับไปใช้ฐานข้อมูลสำรองรายชื่อนักเรียนและพัสดุอัตโนมัติ)
-  const loadDataDirectlyFromFirestore = useCallback(async (): Promise<{
+  // ดึงข้อมูลทั้งหมดจาก Supabase โดยตรง
+  const loadDataDirectlyFromSupabase = useCallback(async (quiet = false): Promise<{
     success: boolean;
-    quotaExceeded?: boolean;
     connectionFailed?: boolean;
+    schemaMissing?: boolean;
   }> => {
     setIsSyncing(true);
-    const applyStudentBackupFallback = async (mode: 'quota_exceeded' | 'offline_fallback') => {
-      setFirestoreConnectionStatus(mode);
-      const [backup, parcelBackup] = await Promise.all([
-        loadAllStudentsFromBackupDb(),
-        loadAllParcelsFromBackupDb(),
-      ]);
-      setStudentBackupStatus({
-        count: backup.count,
-        updatedAt: backup.updatedAt,
-        filePath: backup.filePath,
-        serverFileActive: backup.serverFileActive,
-        indexedDbActive: backup.indexedDbActive,
-        source: backup.source,
-      });
-      setParcelBackupStatus({
-        count: parcelBackup.count,
-        updatedAt: parcelBackup.updatedAt,
-        filePath: parcelBackup.filePath,
-        serverFileActive: parcelBackup.serverFileActive,
-        indexedDbActive: parcelBackup.indexedDbActive,
-        source: parcelBackup.source,
-      });
-
-      if (
-        (backup.students.length > 0 && studentsRef.current.length === 0) ||
-        (parcelBackup.parcels.length > 0 && parcelsRef.current.length === 0)
-      ) {
-        const applied = applyPendingItemsToSnapshot(
-          {
-            students: studentsRef.current.length > 0 ? studentsRef.current : backup.students,
-            parcels: parcelsRef.current.length > 0 ? parcelsRef.current : parcelBackup.parcels,
-            members: membersRef.current,
-            rolePermissions: rolePermissionsRef.current,
-            rateLimitConfig: rateLimitRef.current,
-          },
-          pendingWritesRef.current
-        );
-        if (studentsRef.current.length === 0 && applied.students.length > 0) {
-          setStudents(applied.students);
-        }
-        if (parcelsRef.current.length === 0 && applied.parcels.length > 0) {
-          setParcels(applied.parcels);
-        }
-      }
-    };
-
     try {
-      await initializeDefaultCloudDataIfEmpty(AUTO_CLOUD_OWNER_ID);
-      const data = await fetchCloudDataDirectly(AUTO_CLOUD_OWNER_ID, firebaseAuthUser?.uid);
-      if (data.quotaExceeded) {
-        handleQuotaExceeded();
-        await applyStudentBackupFallback('quota_exceeded');
-        return { success: false, quotaExceeded: true };
+      const initRes = await initializeDefaultSupabaseDataIfEmpty(AUTO_CLOUD_OWNER_ID);
+      if (initRes.schemaMissing) {
+        setSupabaseSchemaMissing(true);
+        supabaseSchemaMissingRef.current = true;
+        setSupabaseConnectionStatus('schema_missing');
+        supabaseConnectionStatusRef.current = 'schema_missing';
+        if (!quiet) {
+          showToast(
+            'Supabase ยังไม่ได้รัน SQL สร้างตาราง (setup.sql) — กรุณากด "คัดลอก SQL สร้างตาราง" ด้านบนแล้วนำไปรันใน Supabase SQL Editor',
+            'warning'
+          );
+        }
+        return { success: false, connectionFailed: true, schemaMissing: true };
       }
+
+      const data = await fetchCloudDataFromSupabase(AUTO_CLOUD_OWNER_ID, firebaseAuthUser?.uid);
+      if (data.schemaMissing) {
+        setSupabaseSchemaMissing(true);
+        supabaseSchemaMissingRef.current = true;
+        setSupabaseConnectionStatus('schema_missing');
+        supabaseConnectionStatusRef.current = 'schema_missing';
+        if (!quiet) {
+          showToast(
+            'Supabase ยังไม่ได้รัน SQL สร้างตาราง (setup.sql) — กรุณากด "คัดลอก SQL สร้างตาราง" ด้านบนแล้วนำไปรันใน Supabase SQL Editor',
+            'warning'
+          );
+        }
+        return { success: false, connectionFailed: true, schemaMissing: true };
+      }
+
       if (data.connectionFailed) {
-        await applyStudentBackupFallback('offline_fallback');
-        showToast(
-          `ไม่สามารถเชื่อมต่อ Firestore ได้ ระบบกำลังใช้ข้อมูลจากฐานข้อมูลสำรอง (นักเรียน ${studentsRef.current.length} คน · พัสดุ ${parcelsRef.current.length} ชิ้น)`,
-          'warning'
-        );
+        setSupabaseConnectionStatus('disconnected');
+        supabaseConnectionStatusRef.current = 'disconnected';
+        if (!quiet) {
+          showToast(
+            `ไม่สามารถเชื่อมต่อ Supabase ได้ในขณะนี้: ${data.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต'}`,
+            'error'
+          );
+        }
         return { success: false, connectionFailed: true };
       }
 
-      setQuotaExceeded(false);
-      setFirestoreConnectionStatus('connected');
+      setSupabaseSchemaMissing(false);
+      supabaseSchemaMissingRef.current = false;
+      setSupabaseConnectionStatus('connected');
+      supabaseConnectionStatusRef.current = 'connected';
+      setLastWriteMode('supabase_direct');
 
-      // รักษารายละเอียด attribution ที่บันทึกไว้ในฐานข้อมูลสำรองของเครื่อง/เซิร์ฟเวอร์ (เช่น recordedByName)
-      const localAttrMap = new Map<string, Parcel>();
-      for (const lp of parcelsRef.current) {
-        localAttrMap.set(lp.id || lp.trackingNumber, lp);
-      }
-      const enrichedCloudParcels = data.parcels.map((cp) => {
-        const key = cp.id || cp.trackingNumber;
-        const localP = localAttrMap.get(key);
-        if (localP?.recordedByMemberId || localP?.recordedByName) {
-          return {
-            ...cp,
-            recordedByMemberId: localP.recordedByMemberId,
-            recordedByName: localP.recordedByName,
-            recordedByRole: localP.recordedByRole,
-          };
-        }
-        return cp;
-      });
-
-      const applied = applyPendingItemsToSnapshot(
-        {
-          students: data.students,
-          parcels: enrichedCloudParcels,
-          members: data.members.length > 0 ? data.members : INITIAL_MEMBERS,
-          rolePermissions:
-            data.rolePermissions.length > 0 ? data.rolePermissions : INITIAL_ROLE_PERMISSIONS,
-          rateLimitConfig: data.rateLimitConfig || rateLimitRef.current,
-        },
-        pendingWritesRef.current
+      const sortedStudents = [...data.students].sort((a, b) => a.seqNo - b.seqNo);
+      const sortedParcels = [...data.parcels].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
+      const loadedMembers = data.members.length > 0 ? data.members : INITIAL_MEMBERS;
+      const loadedRoles =
+        data.rolePermissions.length > 0 ? data.rolePermissions : INITIAL_ROLE_PERMISSIONS;
+      const loadedRateConfig = data.rateLimitConfig || DEFAULT_PARCEL_RATE_LIMIT_CONFIG;
 
-      setStudents(applied.students);
-      setParcels(applied.parcels);
-      setMembers(applied.members);
-      setRolePermissions(applied.rolePermissions);
-      setParcelRateLimitConfig(applied.rateLimitConfig);
-      try {
-        localStorage.setItem('spms_rate_limit_config_v1', JSON.stringify(applied.rateLimitConfig));
-      } catch {
-        // ignore
-      }
+      setStudents(sortedStudents);
+      setParcels(sortedParcels);
+      setMembers(loadedMembers);
+      setRolePermissions(loadedRoles);
+      setParcelRateLimitConfig(loadedRateConfig);
 
       const nowIso = new Date().toISOString();
-      await saveLocalSearchCache({
-        students: applied.students,
-        parcels: applied.parcels,
-        members: applied.members,
-        rolePermissions: applied.rolePermissions,
-        rateLimitConfig: applied.rateLimitConfig,
-        lastSyncedAt: nowIso,
-        lastAutoUploadDate: localBackupStatusRef.current.lastAutoUploadDate,
-        lastUploadedAt: localBackupStatusRef.current.lastUploadedAt,
-      });
-
-      const [backupSaved, parcelBackupSaved] = await Promise.all([
-        saveAllStudentsToBackupDb(applied.students, 'firestore_sync'),
-        saveAllParcelsToBackupDb(applied.parcels, 'firestore_sync'),
-      ]);
-      setStudentBackupStatus({
-        count: backupSaved.count,
-        updatedAt: backupSaved.updatedAt,
-        filePath: backupSaved.filePath,
-        serverFileActive: backupSaved.serverFileActive,
-        indexedDbActive: backupSaved.indexedDbActive,
-        source: backupSaved.source,
-      });
-      setParcelBackupStatus({
-        count: parcelBackupSaved.count,
-        updatedAt: parcelBackupSaved.updatedAt,
-        filePath: parcelBackupSaved.filePath,
-        serverFileActive: parcelBackupSaved.serverFileActive,
-        indexedDbActive: parcelBackupSaved.indexedDbActive,
-        source: parcelBackupSaved.source,
-      });
+      lastRefreshTimeRef.current = Date.now();
+      setLastConnectionCheckAt(nowIso);
+      lastConnectionProbeTimeRef.current = Date.now();
 
       setQuotaMetrics((prev) => ({
         ...prev,
-        firestoreReadsUsed: prev.firestoreReadsUsed + data.readsCount,
+        supabaseReadsUsed: prev.supabaseReadsUsed + data.readsCount,
         lastSyncedAt: nowIso,
       }));
+
       return { success: true };
     } catch (err) {
-      if (isFirestoreQuotaError(err)) {
-        handleQuotaExceeded();
-        await applyStudentBackupFallback('quota_exceeded');
-        return { success: false, quotaExceeded: true };
+      if (isSupabaseTableMissingError(err)) {
+        setSupabaseSchemaMissing(true);
+        supabaseSchemaMissingRef.current = true;
+        setSupabaseConnectionStatus('schema_missing');
+        supabaseConnectionStatusRef.current = 'schema_missing';
+      } else {
+        setSupabaseConnectionStatus('disconnected');
+        supabaseConnectionStatusRef.current = 'disconnected';
       }
-      await applyStudentBackupFallback('offline_fallback');
-      showToast(
-        `ไม่สามารถเชื่อมต่อ Firestore ได้ ระบบกำลังใช้ข้อมูลจากฐานข้อมูลสำรอง (${studentsRef.current.length} คน)`,
-        'warning'
-      );
+      if (!quiet) {
+        showToast(
+          `โหลดข้อมูลจาก Supabase ไม่สำเร็จ: ${err instanceof Error ? err.message : 'Error'}`,
+          'error'
+        );
+      }
       return { success: false, connectionFailed: true };
     } finally {
       setIsSyncing(false);
     }
-  }, [firebaseAuthUser?.uid, handleQuotaExceeded, applyPendingItemsToSnapshot, showToast]);
+  }, [firebaseAuthUser?.uid, showToast]);
 
-  // อัปโหลดข้อมูลทั้งหมดในไฟล์สำรองขึ้น Firebase แล้วลบรายการที่อัปโหลดออกจากไฟล์สำรองรออัพโหลด
-  const uploadStagedToFirebase = useCallback(
-    async (options?: { isAutoMidnight?: boolean }) => {
-      const itemsToUpload = [...pendingWritesRef.current];
-      if (itemsToUpload.length === 0) {
-        if (!options?.isAutoMidnight) {
-          showToast('ไม่มีข้อมูลค้างอัปโหลดในไฟล์สำรองระบบ', 'info');
-        }
-        return;
-      }
-      if (isUploadingRef.current) return;
-      isUploadingRef.current = true;
-      setIsSyncing(true);
-      setSyncProgress({ completed: 0, total: itemsToUpload.length });
-
-      try {
-        const result = await uploadPendingWritesBatchToFirestore(
-          itemsToUpload,
-          AUTO_CLOUD_OWNER_ID,
-          (completed, total) => setSyncProgress({ completed, total })
-        );
-
-        if (result.quotaExceeded) {
-          handleQuotaExceeded(!options?.isAutoMidnight);
-          lastQuotaProbeTimeRef.current = Date.now();
-          setLastQuotaCheckAt(new Date().toISOString());
-          return;
-        }
-
-        if (result.connectionFailed) {
-          setFirestoreConnectionStatus('offline_fallback');
-          firestoreConnectionStatusRef.current = 'offline_fallback';
-          setLastWriteMode('local_storage_offline');
-          showToast(
-            'ไม่สามารถเชื่อมต่อ Firestore ได้ ข้อมูลยังคงปลอดภัยอยู่ใน localStorage และฐานข้อมูลสำรองในระบบ',
-            'warning'
-          );
-          return;
-        }
-
-        const now = new Date();
-        const nowIso = now.toISOString();
-        const todayYMD = getLocalTodayYMD(now);
-        const uploadedKeys = itemsToUpload.map((item) => `${item.collection}:${item.docId}`);
-
-        // อัปโหลดสำเร็จ -> ลบเฉพาะรายการที่อัปโหลดแล้วออกจากคิว localStorage / ไฟล์สำรองรออัพโหลด
-        const clearRes = await clearStagedBackupAfterUpload({
-          lastAutoUploadDate: todayYMD,
-          lastUploadedAt: nowIso,
-          uploadedKeys,
-        });
-
-        const remainingPending = clearRes.remainingPending || [];
-        pendingWritesRef.current = remainingPending;
-        setPendingWrites(remainingPending);
-        setQuotaExceeded(false);
-        quotaExceededRef.current = false;
-        hasShownQuotaNoticeRef.current = false;
-        setFirestoreConnectionStatus('connected');
-        firestoreConnectionStatusRef.current = 'connected';
-        setLastWriteMode('firestore_direct');
-        lastQuotaProbeTimeRef.current = Date.now();
-        setLastQuotaCheckAt(nowIso);
-        setLocalBackupStatus((prev) => ({
-          ...prev,
-          serverFileActive: clearRes.serverFileActive,
-          stagingFileExists: remainingPending.length > 0,
-          stagedCount: remainingPending.length,
-          lastAutoUploadDate: todayYMD,
-          lastUploadedAt: nowIso,
-          nextScheduledUploadAt: getNextMidnightScheduleInfo(now).isoString,
-        }));
-
-        setQuotaMetrics((prev) => ({
-          ...prev,
-          batchedWritesQueued: remainingPending.length,
-          firestoreWritesUsed: prev.firestoreWritesUsed + result.uploadedCount,
-          lastSyncedAt: nowIso,
-        }));
-
-        showToast(
-          options?.isAutoMidnight
-            ? `อัปโหลดข้อมูลอัตโนมัติ (00.00 น.) เข้า Firestore สำเร็จ ${result.uploadedCount} รายการ และล้างคิว localStorage เรียบร้อยแล้ว`
-            : `อัปโหลดข้อมูลจาก localStorage เข้า Firestore สำเร็จ ${result.uploadedCount} รายการ และล้างคิวรอส่งเรียบร้อยแล้ว`,
-          'success'
-        );
-      } catch (err) {
-        if (isFirestoreQuotaError(err)) {
-          handleQuotaExceeded(!options?.isAutoMidnight);
-          lastQuotaProbeTimeRef.current = Date.now();
-          setLastQuotaCheckAt(new Date().toISOString());
-        } else {
-          setFirestoreConnectionStatus('offline_fallback');
-          firestoreConnectionStatusRef.current = 'offline_fallback';
-          setLastWriteMode('local_storage_offline');
-          showToast(
-            `เกิดข้อผิดพลาดระหว่างอัปโหลดขึ้น Firebase (ข้อมูลใน localStorage ยังคงอยู่): ${
-              err instanceof Error ? err.message : 'Error'
-            }`,
-            'error'
-          );
-        }
-      } finally {
-        isUploadingRef.current = false;
-        setIsSyncing(false);
-        setSyncProgress(null);
-      }
-    },
-    [handleQuotaExceeded, showToast]
-  );
-
-  // เริ่มต้นระบบแบบ Local-First: โหลดจากฐานข้อมูลสำรองนักเรียนและไฟล์แคชในระบบก่อน เพื่อทำงานได้แม้เชื่อมต่อ Firestore ไม่ได้
+  // โหลดข้อมูลจาก Supabase โดยตรงทันทีเมื่อเปิดแอป
   useEffect(() => {
     if (hasBootstrappedRef.current) return;
     hasBootstrappedRef.current = true;
 
-    const bootstrapFromLocalFirst = async () => {
-      const store = await loadLocalBackupStore();
-      const cachedStudents =
-        store.cache?.students && store.cache.students.length > 0
-          ? store.cache.students
-          : store.studentsBackup.students;
-
-      const cachedParcels =
-        store.parcelsBackup?.parcels && store.parcelsBackup.parcels.length > 0
-          ? store.parcelsBackup.parcels
-          : store.cache?.parcels || [];
-
-      const hasCachedData =
-        cachedStudents.length > 0 || cachedParcels.length > 0;
-
-      const baseSnapshot = {
-        students: cachedStudents,
-        parcels: cachedParcels,
-        members:
-          store.cache?.members && store.cache.members.length > 0
-            ? store.cache.members
-            : INITIAL_MEMBERS,
-        rolePermissions:
-          store.cache?.rolePermissions && store.cache.rolePermissions.length > 0
-            ? store.cache.rolePermissions
-            : INITIAL_ROLE_PERMISSIONS,
-        rateLimitConfig: store.cache?.rateLimitConfig || rateLimitRef.current,
-      };
-
-      const applied = applyPendingItemsToSnapshot(baseSnapshot, store.pendingWrites);
-      setStudents(applied.students);
-      setParcels(applied.parcels);
-      setMembers(applied.members);
-      setRolePermissions(applied.rolePermissions);
-      setParcelRateLimitConfig(applied.rateLimitConfig);
-
-      pendingWritesRef.current = store.pendingWrites;
-      setPendingWrites(store.pendingWrites);
-
-      setLocalBackupStatus({
-        serverFileActive: store.serverFileActive,
-        stagingFileExists: store.stagingFileExists,
-        stagingFilePath: store.stagingFilePath,
-        cacheFilePath: store.cacheFilePath,
-        stagedCount: store.pendingWrites.length,
-        lastAutoUploadDate: store.cache?.lastAutoUploadDate || null,
-        lastUploadedAt: store.cache?.lastUploadedAt || null,
-        nextScheduledUploadAt: getNextMidnightScheduleInfo().isoString,
-      });
-
-      setStudentBackupStatus({
-        count: applied.students.length,
-        updatedAt: store.studentsBackup.updatedAt,
-        filePath: store.studentsBackup.filePath,
-        serverFileActive: store.studentsBackup.serverFileActive,
-        indexedDbActive: store.studentsBackup.indexedDbActive,
-        source: store.studentsBackup.source,
-      });
-
-      setParcelBackupStatus({
-        count: applied.parcels.length,
-        updatedAt: store.parcelsBackup.updatedAt,
-        filePath: store.parcelsBackup.filePath,
-        serverFileActive: store.parcelsBackup.serverFileActive,
-        indexedDbActive: store.parcelsBackup.indexedDbActive,
-        source: store.parcelsBackup.source,
-      });
-
-      setQuotaMetrics((prev) => ({
-        ...prev,
-        batchedWritesQueued: store.pendingWrites.length,
-        lastSyncedAt: store.cache?.lastSyncedAt || prev.lastSyncedAt,
-      }));
-
-      // หากไม่มีข้อมูลสำรองในเครื่องเลย (เปิดใช้งานครั้งแรก) จึงดึงจาก Firebase 1 ครั้งแล้วบันทึกลงฐานข้อมูลสำรอง
-      if (!hasCachedData && store.pendingWrites.length === 0) {
-        await loadDataDirectlyFromFirestore();
-        return;
-      }
-
-      // หากมีข้อมูลค้างอัปโหลดจากวันก่อนหน้า (เลยเวลา 00.00 น. มาแล้ว) ให้อัปโหลดอัตโนมัติทันที (หากโควตาเต็มจะแจ้งเตือนและเก็บไว้ใน localStorage ต่อ)
-      const todayYMD = getLocalTodayYMD();
-      const hasOverdueStaged = store.pendingWrites.some(
-        (item) => getLocalTodayYMD(new Date(item.queuedAt)) < todayYMD
-      );
-      if (
-        store.pendingWrites.length > 0 &&
-        hasOverdueStaged &&
-        store.cache?.lastAutoUploadDate !== todayYMD
-      ) {
-        await uploadStagedToFirebase({ isAutoMidnight: true });
-      }
+    const bootstrapFromSupabase = async () => {
+      await loadDataDirectlyFromSupabase(false);
+      void checkSupabaseDetailedStatus().then((details) => setSupabaseConnectionDetails(details));
     };
 
-    bootstrapFromLocalFirst();
-  }, [applyPendingItemsToSnapshot, loadDataDirectlyFromFirestore, uploadStagedToFirebase]);
+    void bootstrapFromSupabase();
+  }, [loadDataDirectlyFromSupabase]);
 
-  // รีเฟรชยอดรวมพัสดุและคิวรออัปโหลดจากฐานข้อมูลสำรองกลางของเซิร์ฟเวอร์ (เพื่อรวมยอดทุก User ที่ใช้งานพร้อมกัน)
-  const refreshFromLocalBackupServer = useCallback(async (): Promise<void> => {
-    try {
-      const store = await loadLocalBackupStore();
-      if (!store.serverFileActive) return;
-
-      const serverParcels =
-        store.parcelsBackup.parcels.length > 0
-          ? store.parcelsBackup.parcels
-          : store.cache?.parcels || [];
-
-      const applied = applyPendingItemsToSnapshot(
-        {
-          students:
-            store.cache?.students && store.cache.students.length > 0
-              ? store.cache.students
-              : studentsRef.current,
-          parcels: serverParcels,
-          members:
-            store.cache?.members && store.cache.members.length > 0
-              ? store.cache.members
-              : membersRef.current,
-          rolePermissions:
-            store.cache?.rolePermissions && store.cache.rolePermissions.length > 0
-              ? store.cache.rolePermissions
-              : rolePermissionsRef.current,
-          rateLimitConfig: store.cache?.rateLimitConfig || rateLimitRef.current,
-        },
-        store.pendingWrites
-      );
-
-      setParcels(applied.parcels);
-      pendingWritesRef.current = store.pendingWrites;
-      setPendingWrites(store.pendingWrites);
-      setLocalBackupStatus((prev) => ({
-        ...prev,
-        serverFileActive: store.serverFileActive,
-        stagingFileExists: store.stagingFileExists,
-        stagedCount: store.pendingWrites.length,
-        lastAutoUploadDate: store.cache?.lastAutoUploadDate || prev.lastAutoUploadDate,
-        lastUploadedAt: store.cache?.lastUploadedAt || prev.lastUploadedAt,
-      }));
-      setParcelBackupStatus({
-        count: applied.parcels.length,
-        updatedAt: store.parcelsBackup.updatedAt,
-        filePath: store.parcelsBackup.filePath,
-        serverFileActive: store.parcelsBackup.serverFileActive,
-        indexedDbActive: store.parcelsBackup.indexedDbActive,
-        source: store.parcelsBackup.source,
-      });
-      setQuotaMetrics((prev) => ({
-        ...prev,
-        batchedWritesQueued: store.pendingWrites.length,
-      }));
-    } catch {
-      // ignore background refresh failures
-    }
-  }, [applyPendingItemsToSnapshot]);
-
+  // ซิงก์ข้อมูลล่าสุดจาก Supabase อัตโนมัติเมื่อหน้าต่างกลับมาโฟกัส (เว้นระยะอย่างน้อย 15 วินาที)
   useEffect(() => {
     const onFocus = () => {
-      void refreshFromLocalBackupServer();
+      if (isUploadingRef.current) return;
+      if (Date.now() - lastRefreshTimeRef.current < 15_000) return;
+      void loadDataDirectlyFromSupabase(true);
     };
     window.addEventListener('focus', onFocus);
-    const interval = setInterval(() => {
-      void refreshFromLocalBackupServer();
-    }, 15000);
     return () => {
       window.removeEventListener('focus', onFocus);
-      clearInterval(interval);
     };
-  }, [refreshFromLocalBackupServer]);
+  }, [loadDataDirectlyFromSupabase]);
 
-  useEffect(() => {
-    if (hasBootstrappedRef.current && currentMemberId) {
-      void refreshFromLocalBackupServer();
-    }
-  }, [currentMemberId, refreshFromLocalBackupServer]);
-
-  // ตั้งเวลาอัปโหลดอัตโนมัติทุกวันเวลา 00.00 น. ของทุกวัน และลบไฟล์สำรองในระบบหลังอัปโหลดสำเร็จ
-  useEffect(() => {
-    let midnightTimeout: ReturnType<typeof setTimeout> | null = null;
-
-    const scheduleNextMidnight = () => {
-      const info = getNextMidnightScheduleInfo();
-      setLocalBackupStatus((prev) => ({
-        ...prev,
-        nextScheduledUploadAt: info.isoString,
-      }));
-
-      // จำกัด setTimeout ไม่เกิน 24 วัน (ป้องกัน 32-bit overflow) ซึ่งเที่ยงคืนถัดไป < 24 ชม. เสมอ
-      midnightTimeout = setTimeout(() => {
-        if (pendingWritesRef.current.length > 0) {
-          void uploadStagedToFirebase({ isAutoMidnight: true });
-        }
-        scheduleNextMidnight();
-      }, info.msUntilMidnight + 500);
-    };
-
-    scheduleNextMidnight();
-
-    // ตรวจสอบซ้ำทุก 30 วินาที เผื่อกรณีเครื่องสลีปข้ามเที่ยงคืน
-    const checkInterval = setInterval(() => {
-      const now = new Date();
-      const todayYMD = getLocalTodayYMD(now);
-      const isMidnightWindow = now.getHours() === 0 && now.getMinutes() <= 2;
-      const hasOverdue = pendingWritesRef.current.some(
-        (item) => getLocalTodayYMD(new Date(item.queuedAt)) < todayYMD
-      );
-
-      if (
-        pendingWritesRef.current.length > 0 &&
-        localBackupStatusRef.current.lastAutoUploadDate !== todayYMD &&
-        (isMidnightWindow || hasOverdue)
-      ) {
-        void uploadStagedToFirebase({ isAutoMidnight: true });
-      }
-    }, 30000);
-
-    return () => {
-      if (midnightTimeout) clearTimeout(midnightTimeout);
-      clearInterval(checkInterval);
-    };
-  }, [uploadStagedToFirebase]);
-
-  // In-Memory Hash Map สำหรับค้นหาข้อมูลนักเรียนทันที (รองรับทั้งรหัสเดิมและรหัสเติม 0 ครบ 5 หลัก)
+  // In-Memory Hash Map สำหรับค้นหาข้อมูลนักเรียนทันที
   const studentMap = useMemo(() => {
     const map = new Map<string, Student>();
     for (const s of students) {
@@ -1399,31 +622,30 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const updateParcelRateLimitConfig = useCallback(
     async (newConfig: ParcelRateLimitConfig): Promise<void> => {
-      setParcelRateLimitConfig(newConfig);
+      setIsSyncing(true);
       try {
-        localStorage.setItem('spms_rate_limit_config_v1', JSON.stringify(newConfig));
-      } catch {
-        // ignore
+        const item: SupabaseWriteItem = {
+          id: `system_settings:parcel_rate_limits:${Date.now()}`,
+          collection: 'system_settings',
+          docId: 'parcel_rate_limits',
+          action: 'upsert',
+          data: newConfig,
+        };
+        const writeRes = await commitWritesDirectlyToSupabase([item]);
+        if (writeRes.mode === 'supabase_direct') {
+          setParcelRateLimitConfig(newConfig);
+          showToast('บันทึกการตั้งค่าอัตราการสั่งพัสดุลง Supabase โดยตรงสำเร็จ', 'success');
+        } else {
+          showToast(
+            `ไม่สามารถบันทึกการตั้งค่าลง Supabase ได้: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+            'error'
+          );
+        }
+      } finally {
+        setIsSyncing(false);
       }
-      const item: PendingWriteItem = {
-        id: `system_settings:parcel_rate_limits:${Date.now()}`,
-        collection: 'system_settings',
-        docId: 'parcel_rate_limits',
-        action: 'upsert',
-        data: newConfig,
-        queuedAt: new Date().toISOString(),
-      };
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage([item], {
-        rateLimitConfig: newConfig,
-      });
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? 'บันทึกการตั้งค่าอัตราการสั่งพัสดุลงฐานข้อมูล Firestore โดยตรงสำเร็จ'
-          : 'โควตา Firestore เต็ม/ออฟไลน์ — บันทึกการตั้งค่าอัตราการสั่งพัสดุลง localStorage แล้ว',
-        writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
-      );
     },
-    [commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [commitWritesDirectlyToSupabase, showToast]
   );
 
   const getStudentParcelCounts = useCallback(
@@ -1538,33 +760,29 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
   }, []);
 
   /**
-   * ค้นหานักเรียนจากข้อมูลสำรองในระบบก่อน หากไม่พบจึงค้นหาใน Firebase (ลด Quota การอ่าน)
+   * ค้นหานักเรียนจากข้อมูลที่โหลดไว้ในหน่วยความจำก่อน หากไม่พบจึงค้นหาจาก Supabase โดยตรง
    */
   const lookupStudentWithCloudFallback = useCallback(
     async (
       code: string
-    ): Promise<{ student: Student | undefined; source: 'local' | 'firebase' | 'none' }> => {
+    ): Promise<{ student: Student | undefined; source: 'memory' | 'supabase' | 'none' }> => {
       const localMatch = lookupStudentByCode(code);
       if (localMatch) {
         recordLocalSearchSaving();
-        return { student: localMatch, source: 'local' };
+        return { student: localMatch, source: 'memory' };
       }
 
       const clean = code.trim();
-      if (!clean || quotaExceeded) {
+      if (!clean || supabaseSchemaMissingRef.current) {
         return { student: undefined, source: 'none' };
       }
 
-      const fallbackRes = await findStudentInFirestoreFallback(clean);
-      if (fallbackRes.quotaExceeded) {
-        handleQuotaExceeded();
-        return { student: undefined, source: 'none' };
-      }
+      const fallbackRes = await findStudentInSupabaseFallback(clean);
 
       if (fallbackRes.readsCount > 0) {
         setQuotaMetrics((prev) => ({
           ...prev,
-          firestoreReadsUsed: prev.firestoreReadsUsed + fallbackRes.readsCount,
+          supabaseReadsUsed: prev.supabaseReadsUsed + fallbackRes.readsCount,
         }));
       }
 
@@ -1575,17 +793,16 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           ...studentsRef.current.filter((s) => s.studentCode !== foundStudent.studentCode),
         ].sort((a, b) => a.seqNo - b.seqNo);
         setStudents(nextStudents);
-        await saveLocalSearchCache({ students: nextStudents });
-        return { student: foundStudent, source: 'firebase' };
+        return { student: foundStudent, source: 'supabase' };
       }
 
       return { student: undefined, source: 'none' };
     },
-    [lookupStudentByCode, recordLocalSearchSaving, quotaExceeded, handleQuotaExceeded]
+    [lookupStudentByCode, recordLocalSearchSaving]
   );
 
   /**
-   * ค้นหาพัสดุจากข้อมูลสำรองในระบบก่อน หากไม่พบจึงค้นหาใน Firebase (ลด Quota การอ่าน)
+   * ค้นหาพัสดุจากข้อมูลที่โหลดไว้ในหน่วยความจำก่อน หากไม่พบจึงค้นหาจาก Supabase โดยตรง
    */
   const searchParcelsWithCloudFallback = useCallback(
     async (
@@ -1593,28 +810,24 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       statusFilter = 'ALL',
       dormFilter = 'ALL',
       dateFilter = 'ALL'
-    ): Promise<{ parcels: Parcel[]; source: 'local' | 'firebase' }> => {
+    ): Promise<{ parcels: Parcel[]; source: 'memory' | 'supabase' }> => {
       const localResults = searchParcelsLocal(keyword, statusFilter, dormFilter, dateFilter);
       if (localResults.length > 0) {
         recordLocalSearchSaving();
-        return { parcels: localResults, source: 'local' };
+        return { parcels: localResults, source: 'memory' };
       }
 
       const clean = keyword.trim();
-      if (clean.length < 4 || quotaExceeded) {
-        return { parcels: [], source: 'local' };
+      if (clean.length < 4 || supabaseSchemaMissingRef.current) {
+        return { parcels: [], source: 'memory' };
       }
 
-      const fallbackRes = await findParcelInFirestoreFallback(clean, AUTO_CLOUD_OWNER_ID);
-      if (fallbackRes.quotaExceeded) {
-        handleQuotaExceeded();
-        return { parcels: [], source: 'local' };
-      }
+      const fallbackRes = await findParcelInSupabaseFallback(clean);
 
       if (fallbackRes.readsCount > 0) {
         setQuotaMetrics((prev) => ({
           ...prev,
-          firestoreReadsUsed: prev.firestoreReadsUsed + fallbackRes.readsCount,
+          supabaseReadsUsed: prev.supabaseReadsUsed + fallbackRes.readsCount,
         }));
       }
 
@@ -1630,7 +843,6 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         );
         setParcels(mergedParcels);
-        await saveLocalSearchCache({ parcels: mergedParcels });
 
         const filteredCloud = fallbackRes.parcels.filter((p) => {
           if (statusFilter !== 'ALL' && p.status !== statusFilter) return false;
@@ -1638,21 +850,18 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           if (dateFilter !== 'ALL' && p.receivedDate !== dateFilter) return false;
           return true;
         });
-        return { parcels: filteredCloud, source: 'firebase' };
+        return { parcels: filteredCloud, source: 'supabase' };
       }
 
-      return { parcels: [], source: 'firebase' };
+      return { parcels: [], source: 'supabase' };
     },
-    [searchParcelsLocal, recordLocalSearchSaving, quotaExceeded, handleQuotaExceeded]
+    [searchParcelsLocal, recordLocalSearchSaving]
   );
 
   // -----------------------------------------------------------------
-  // การดำเนินการ บันทึก / แก้ไข / ลบ ลงไฟล์สำรองในระบบก่อน แล้วอัปโหลดขึ้น Firebase เวลา 00.00 น.
+  // การดำเนินการ บันทึก / แก้ไข / ลบ ลง Supabase โดยตรง
   // -----------------------------------------------------------------
 
-  /**
-   * บันทึกรับเข้าพัสดุใหม่ลงไฟล์สำรองของระบบก่อน (รออัปโหลดขึ้น Firebase เวลา 00.00 น.)
-   */
   const addInboundParcel = useCallback(
     async (input: NewParcelInput): Promise<Parcel & { writeMode?: WriteTargetMode }> => {
       const trackingNumber = input.trackingNumber.trim();
@@ -1717,49 +926,43 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         updatedAt: isoNow,
       };
 
-      const nextParcels = [
-        newParcel,
-        ...parcelsRef.current.filter((p) => (p.id || p.trackingNumber) !== trackingNumber),
-      ];
-      setParcels(nextParcels);
-
-      const stagedItem: PendingWriteItem = {
+      const item: SupabaseWriteItem = {
         id: `parcels:${trackingNumber}:${Date.now()}`,
         collection: 'parcels',
         docId: trackingNumber,
         action: 'upsert',
         data: newParcel,
-        queuedAt: isoNow,
-        queuedByMemberId: actor.memberId,
-        queuedByName: actor.name,
-        queuedByRole: actor.role,
       };
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage([stagedItem], {
-        parcels: nextParcels,
-      });
-      if (writeRes.mode === 'firestore_direct') {
+
+      const writeRes = await commitWritesDirectlyToSupabase([item]);
+      if (writeRes.mode === 'supabase_direct') {
+        const nextParcels = [
+          newParcel,
+          ...parcelsRef.current.filter((p) => (p.id || p.trackingNumber) !== trackingNumber),
+        ];
+        setParcels(nextParcels);
         showToast(
-          `บันทึกพัสดุ ${newParcel.trackingNumber} ลงฐานข้อมูล Firestore โดยตรงสำเร็จ`,
+          `บันทึกพัสดุ ${newParcel.trackingNumber} ลงฐานข้อมูล Supabase โดยตรงสำเร็จ`,
           'success'
         );
+
+        if (!isUnknownOwnerParcel(newParcel)) {
+          const stats = getStudentParcelCountStats(
+            nextParcels,
+            newParcel.studentCode,
+            newParcel.studentFullName,
+            matchedStudent,
+            parcelRateLimitConfig
+          );
+          if (stats.isOverLimit) {
+            openWeeklyWarningPopup(stats, 'inbound_added');
+          }
+        }
       } else {
         showToast(
-          `Quota Firestore เต็ม — บันทึกพัสดุ ${newParcel.trackingNumber} ลง localStorage สำเร็จ (พร้อมส่งออกหรืออัปโหลดเข้า Firestore)`,
-          'warning'
+          `บันทึกพัสดุ ${newParcel.trackingNumber} ลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อฐานข้อมูล'}`,
+          'error'
         );
-      }
-
-      if (!isUnknownOwnerParcel(newParcel)) {
-        const stats = getStudentParcelCountStats(
-          nextParcels,
-          newParcel.studentCode,
-          newParcel.studentFullName,
-          matchedStudent,
-          parcelRateLimitConfig
-        );
-        if (stats.isOverLimit) {
-          openWeeklyWarningPopup(stats, 'inbound_added');
-        }
       }
 
       return { ...newParcel, writeMode: writeRes.mode };
@@ -1767,16 +970,13 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     [
       lookupStudentByCode,
       getCurrentActorAttribution,
-      commitWritesDirectOrFallbackToLocalStorage,
+      commitWritesDirectlyToSupabase,
       openWeeklyWarningPopup,
       showToast,
       parcelRateLimitConfig,
     ]
   );
 
-  /**
-   * อัปเดตสถานะพัสดุลงไฟล์สำรองในระบบก่อน (รออัปโหลดขึ้น Firebase เวลา 00.00 น.)
-   */
   const updateParcelStatus = useCallback(
     async (
       parcelId: string,
@@ -1810,38 +1010,33 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       });
 
       if (!updatedTarget) return;
-      setParcels(nextParcels);
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        [
-          {
-            id: `parcels:${parcelId}:${Date.now()}`,
-            collection: 'parcels',
-            docId: parcelId,
-            action: 'upsert',
-            data: updatedTarget,
-            queuedAt: isoNow,
-            queuedByMemberId: actor.memberId,
-            queuedByName: actor.name,
-            queuedByRole: actor.role,
-          },
-        ],
-        { parcels: nextParcels }
-      );
+      const writeRes = await commitWritesDirectlyToSupabase([
+        {
+          id: `parcels:${parcelId}:${Date.now()}`,
+          collection: 'parcels',
+          docId: parcelId,
+          action: 'upsert',
+          data: updatedTarget,
+        },
+      ]);
 
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `อัปเดตสถานะพัสดุ ${parcelId} เป็น "${newStatus}" ลงฐานข้อมูล Firestore โดยตรงสำเร็จ`
-          : `Quota เต็ม — อัปเดตสถานะพัสดุ ${parcelId} เป็น "${newStatus}" ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
-      );
+      if (writeRes.mode === 'supabase_direct') {
+        setParcels(nextParcels);
+        showToast(
+          `อัปเดตสถานะพัสดุ ${parcelId} เป็น "${newStatus}" ลง Supabase โดยตรงสำเร็จ`,
+          'success'
+        );
+      } else {
+        showToast(
+          `อัปเดตสถานะพัสดุ ${parcelId} ลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+      }
     },
-    [getCurrentActorAttribution, commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [getCurrentActorAttribution, commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * แก้ไขรายละเอียดพัสดุลงไฟล์สำรองในระบบก่อน
-   */
   const updateParcelDetails = useCallback(
     async (parcelId: string, updates: Partial<Parcel>): Promise<void> => {
       const isoNow = new Date().toISOString();
@@ -1863,38 +1058,30 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       });
 
       if (!updatedTarget) return;
-      setParcels(nextParcels);
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        [
-          {
-            id: `parcels:${parcelId}:${Date.now()}`,
-            collection: 'parcels',
-            docId: parcelId,
-            action: 'upsert',
-            data: updatedTarget,
-            queuedAt: isoNow,
-            queuedByMemberId: actor.memberId,
-            queuedByName: actor.name,
-            queuedByRole: actor.role,
-          },
-        ],
-        { parcels: nextParcels }
-      );
+      const writeRes = await commitWritesDirectlyToSupabase([
+        {
+          id: `parcels:${parcelId}:${Date.now()}`,
+          collection: 'parcels',
+          docId: parcelId,
+          action: 'upsert',
+          data: updatedTarget,
+        },
+      ]);
 
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `บันทึกการแก้ไขข้อมูลพัสดุ ${parcelId} ลง Firestore โดยตรงสำเร็จ`
-          : `Quota เต็ม — บันทึกการแก้ไขข้อมูลพัสดุ ${parcelId} ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
-      );
+      if (writeRes.mode === 'supabase_direct') {
+        setParcels(nextParcels);
+        showToast(`บันทึกการแก้ไขข้อมูลพัสดุ ${parcelId} ลง Supabase โดยตรงสำเร็จ`, 'success');
+      } else {
+        showToast(
+          `แก้ไขข้อมูลพัสดุ ${parcelId} ลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+      }
     },
-    [getCurrentActorAttribution, commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [getCurrentActorAttribution, commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * อัปเดตสถานะพัสดุหลายรายการพร้อมกันลงไฟล์สำรองในระบบก่อน
-   */
   const bulkUpdateParcelStatus = useCallback(
     async (
       parcelIds: string[],
@@ -1909,7 +1096,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           : '';
       const isoNow = new Date().toISOString();
       const actor = getCurrentActorAttribution();
-      const stagedItems: PendingWriteItem[] = [];
+      const writeItems: SupabaseWriteItem[] = [];
 
       const nextParcels = parcelsRef.current.map((p) => {
         const key = p.id || p.trackingNumber;
@@ -1923,77 +1110,68 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             recordedByRole: p.recordedByRole || actor.role,
             updatedAt: isoNow,
           };
-          stagedItems.push({
+          writeItems.push({
             id: `parcels:${key}:${Date.now()}`,
             collection: 'parcels',
             docId: key,
             action: 'upsert',
             data: updated,
-            queuedAt: isoNow,
-            queuedByMemberId: actor.memberId,
-            queuedByName: actor.name,
-            queuedByRole: actor.role,
           });
           return updated;
         }
         return p;
       });
 
-      setParcels(nextParcels);
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(stagedItems, {
-        parcels: nextParcels,
-      });
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `อัปเดตพัสดุ ${stagedItems.length} รายการเป็น "${newStatus}" ลง Firestore โดยตรงสำเร็จ`
-          : `Quota เต็ม — อัปเดตพัสดุ ${stagedItems.length} รายการเป็น "${newStatus}" ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
-      );
+      setIsSyncing(true);
+      try {
+        const writeRes = await commitWritesDirectlyToSupabase(writeItems, writeItems.length > 50);
+        if (writeRes.mode === 'supabase_direct') {
+          setParcels(nextParcels);
+          showToast(
+            `อัปเดตพัสดุ ${writeItems.length} รายการเป็น "${newStatus}" ลง Supabase โดยตรงสำเร็จ`,
+            'success'
+          );
+        } else {
+          showToast(
+            `อัปเดตพัสดุลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+            'error'
+          );
+        }
+      } finally {
+        setIsSyncing(false);
+      }
     },
-    [getCurrentActorAttribution, commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [getCurrentActorAttribution, commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * ลบพัสดุออกจากแคชในระบบและพักคำสั่งลบลงไฟล์สำรองก่อนอัปโหลดขึ้น Firebase
-   */
   const deleteParcel = useCallback(
     async (parcelId: string): Promise<void> => {
       const nextParcels = parcelsRef.current.filter(
         (p) => (p.id || p.trackingNumber) !== parcelId
       );
-      setParcels(nextParcels);
-      const actor = getCurrentActorAttribution();
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        [
-          {
-            id: `parcels:${parcelId}:${Date.now()}`,
-            collection: 'parcels',
-            docId: parcelId,
-            action: 'delete',
-            queuedAt: new Date().toISOString(),
-            queuedByMemberId: actor.memberId,
-            queuedByName: actor.name,
-            queuedByRole: actor.role,
-          },
-        ],
-        { parcels: nextParcels },
-        { replaceCacheParcels: true }
-      );
+      const writeRes = await commitWritesDirectlyToSupabase([
+        {
+          id: `parcels:${parcelId}:${Date.now()}`,
+          collection: 'parcels',
+          docId: parcelId,
+          action: 'delete',
+        },
+      ]);
 
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `ลบรายการพัสดุ ${parcelId} ออกจากฐานข้อมูล Firestore โดยตรงแล้ว`
-          : `Quota เต็ม — บันทึกคำสั่งลบพัสดุ ${parcelId} ลง localStorage แล้ว (รออัปโหลดเข้า Firestore)`,
-        writeRes.mode === 'firestore_direct' ? 'info' : 'warning'
-      );
+      if (writeRes.mode === 'supabase_direct') {
+        setParcels(nextParcels);
+        showToast(`ลบรายการพัสดุ ${parcelId} ออกจากฐานข้อมูล Supabase โดยตรงแล้ว`, 'info');
+      } else {
+        showToast(
+          `ลบรายการพัสดุ ${parcelId} ออกจาก Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+      }
     },
-    [getCurrentActorAttribution, commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * ลบพัสดุหลายรายการออกจากแคชและพักคำสั่งลบลงไฟล์สำรองก่อน
-   */
   const bulkDeleteParcels = useCallback(
     async (parcelIds: string[], reasonLabel?: string): Promise<number> => {
       if (parcelIds.length === 0) return 0;
@@ -2001,40 +1179,37 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       const nextParcels = parcelsRef.current.filter(
         (p) => !targetSet.has(p.id || p.trackingNumber)
       );
-      setParcels(nextParcels);
 
-      const isoNow = new Date().toISOString();
-      const actor = getCurrentActorAttribution();
-      const stagedItems: PendingWriteItem[] = parcelIds.map((pid) => ({
+      const writeItems: SupabaseWriteItem[] = parcelIds.map((pid) => ({
         id: `parcels:${pid}:${Date.now()}`,
         collection: 'parcels',
         docId: pid,
         action: 'delete',
-        queuedAt: isoNow,
-        queuedByMemberId: actor.memberId,
-        queuedByName: actor.name,
-        queuedByRole: actor.role,
       }));
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        stagedItems,
-        { parcels: nextParcels },
-        { replaceCacheParcels: true }
-      );
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `ลบข้อมูลพัสดุ${reasonLabel ? ` (${reasonLabel})` : ''} จำนวน ${parcelIds.length} ชิ้น ออกจาก Firestore โดยตรงแล้ว`
-          : `Quota เต็ม — บันทึกคำสั่งลบพัสดุ${reasonLabel ? ` (${reasonLabel})` : ''} ${parcelIds.length} ชิ้น ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'info' : 'warning'
-      );
-      return parcelIds.length;
+      setIsSyncing(true);
+      try {
+        const writeRes = await commitWritesDirectlyToSupabase(writeItems, writeItems.length > 50);
+        if (writeRes.mode === 'supabase_direct') {
+          setParcels(nextParcels);
+          showToast(
+            `ลบข้อมูลพัสดุ${reasonLabel ? ` (${reasonLabel})` : ''} จำนวน ${parcelIds.length} ชิ้น ออกจาก Supabase โดยตรงแล้ว`,
+            'info'
+          );
+          return parcelIds.length;
+        }
+        showToast(
+          `ลบข้อมูลพัสดุออกจาก Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+        return 0;
+      } finally {
+        setIsSyncing(false);
+      }
     },
-    [getCurrentActorAttribution, commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * ลบพัสดุตามหอพักลงไฟล์สำรองก่อน
-   */
   const bulkDeleteParcelsByDorm = useCallback(
     async (dormitory: string, statusFilter = 'ALL'): Promise<number> => {
       const normDorm = dormitory.trim();
@@ -2060,9 +1235,6 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     [bulkDeleteParcels, showToast]
   );
 
-  /**
-   * ล้างข้อมูลพัสดุทั้งหมดในแคชและพักคำสั่งลบลงไฟล์สำรอง
-   */
   const clearAllParcels = useCallback(async (): Promise<number> => {
     const allIds = parcelsRef.current.map((p) => p.id || p.trackingNumber);
     if (allIds.length === 0) {
@@ -2072,9 +1244,6 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     return await bulkDeleteParcels(allIds, 'ทั้งหมดในระบบ');
   }, [bulkDeleteParcels, showToast]);
 
-  /**
-   * นำเข้าหรือกู้คืนข้อมูลพัสดุจำนวนมากลงไฟล์สำรองระบบก่อน (รออัปโหลดขึ้น Firebase เวลา 00.00 น.)
-   */
   const bulkImportParcels = useCallback(
     async (
       rawParcels: (Parcel | Omit<Parcel, 'createdAt' | 'updatedAt'>)[]
@@ -2087,7 +1256,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         mergedMap.set(p.id || p.trackingNumber, p);
       }
 
-      const stagedItems: PendingWriteItem[] = [];
+      const writeItems: SupabaseWriteItem[] = [];
       for (const raw of rawParcels) {
         const id = (raw.trackingNumber || raw.id || '').trim();
         if (!id) continue;
@@ -2104,70 +1273,81 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           updatedAt: isoNow,
         };
         mergedMap.set(id, parcelObj);
-        stagedItems.push({
+        writeItems.push({
           id: `parcels:${id}:${Date.now()}`,
           collection: 'parcels',
           docId: id,
           action: 'upsert',
           data: parcelObj,
-          queuedAt: isoNow,
-          queuedByMemberId: actor.memberId,
-          queuedByName: actor.name,
-          queuedByRole: actor.role,
         });
       }
 
       const nextParcels = Array.from(mergedMap.values()).sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
-      setParcels(nextParcels);
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(stagedItems, {
-        parcels: nextParcels,
-      });
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `นำเข้า/กู้คืนข้อมูลพัสดุ ${stagedItems.length} รายการ ลง Firestore โดยตรงสำเร็จ`
-          : `Quota เต็ม — นำเข้าข้อมูลพัสดุ ${stagedItems.length} รายการ ลง localStorage แล้ว (พร้อมส่งออกหรืออัปโหลดเข้า Firestore)`,
-        writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
-      );
-      return stagedItems.length;
+
+      setIsSyncing(true);
+      try {
+        const writeRes = await commitWritesDirectlyToSupabase(writeItems, writeItems.length > 50);
+        if (writeRes.mode === 'supabase_direct') {
+          setParcels(nextParcels);
+          showToast(
+            `นำเข้า/กู้คืนข้อมูลพัสดุ ${writeItems.length} รายการ ลง Supabase โดยตรงสำเร็จ`,
+            'success'
+          );
+          return writeItems.length;
+        }
+        showToast(
+          `นำเข้าข้อมูลพัสดุลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+        return 0;
+      } finally {
+        setIsSyncing(false);
+      }
     },
-    [getCurrentActorAttribution, commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [getCurrentActorAttribution, commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * กู้คืนข้อมูลสำรองทั้งระบบ (พักลงไฟล์สำรองระบบก่อนอัปโหลดขึ้น Firebase)
-   */
   const fullRestoreSystemBackup = useCallback(
     async (
       backupData: { students?: Student[]; parcels?: Parcel[] },
       replaceAll = false
     ): Promise<{ studentsCount: number; parcelsCount: number }> => {
       const isoNow = new Date().toISOString();
-      const stagedItems: PendingWriteItem[] = [];
+      const writeItems: SupabaseWriteItem[] = [];
 
       let nextStudents = replaceAll ? [] : [...studentsRef.current];
       let nextParcels = replaceAll ? [] : [...parcelsRef.current];
 
+      const incomingStudentCodes = new Set(
+        (backupData.students || []).map((s) => formatStudentCode(s.studentCode)).filter(Boolean)
+      );
+      const incomingParcelIds = new Set(
+        (backupData.parcels || []).map((p) => (p.trackingNumber || p.id || '').trim()).filter(Boolean)
+      );
+
       if (replaceAll) {
         for (const p of parcelsRef.current) {
-          const pid = p.id || p.trackingNumber;
-          stagedItems.push({
-            id: `parcels:${pid}:${Date.now()}`,
-            collection: 'parcels',
-            docId: pid,
-            action: 'delete',
-            queuedAt: isoNow,
-          });
+          const pid = (p.id || p.trackingNumber || '').trim();
+          if (pid && !incomingParcelIds.has(pid)) {
+            writeItems.push({
+              id: `parcels:${pid}:${Date.now()}`,
+              collection: 'parcels',
+              docId: pid,
+              action: 'delete',
+            });
+          }
         }
         for (const s of studentsRef.current) {
-          stagedItems.push({
-            id: `students:${s.studentCode}:${Date.now()}`,
-            collection: 'students',
-            docId: s.studentCode,
-            action: 'delete',
-            queuedAt: isoNow,
-          });
+          if (s.studentCode && !incomingStudentCodes.has(s.studentCode)) {
+            writeItems.push({
+              id: `students:${s.studentCode}:${Date.now()}`,
+              collection: 'students',
+              docId: s.studentCode,
+              action: 'delete',
+            });
+          }
         }
       }
 
@@ -2179,6 +1359,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         for (const s of nextStudents) sMap.set(s.studentCode, s);
         for (const s of backupData.students) {
           const code = formatStudentCode(s.studentCode);
+          if (!code) continue;
           const studentObj: Student = {
             ...s,
             studentCode: code,
@@ -2187,13 +1368,12 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             updatedAt: isoNow,
           };
           sMap.set(code, studentObj);
-          stagedItems.push({
+          writeItems.push({
             id: `students:${code}:${Date.now()}`,
             collection: 'students',
             docId: code,
             action: 'upsert',
             data: studentObj,
-            queuedAt: isoNow,
           });
           studentsCount++;
         }
@@ -2219,16 +1399,12 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
             updatedAt: isoNow,
           };
           pMap.set(pid, parcelObj);
-          stagedItems.push({
+          writeItems.push({
             id: `parcels:${pid}:${Date.now()}`,
             collection: 'parcels',
             docId: pid,
             action: 'upsert',
             data: parcelObj,
-            queuedAt: isoNow,
-            queuedByMemberId: actor.memberId,
-            queuedByName: actor.name,
-            queuedByRole: actor.role,
           });
           parcelsCount++;
         }
@@ -2237,46 +1413,43 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         );
       }
 
-      setStudents(nextStudents);
-      setParcels(nextParcels);
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        stagedItems,
-        {
-          students: nextStudents,
-          parcels: nextParcels,
-        },
-        { replaceCacheParcels: replaceAll }
-      );
-
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `กู้คืนข้อมูลลง Firestore โดยตรงสำเร็จ: นักเรียน ${studentsCount} คน, พัสดุ ${parcelsCount} รายการ`
-          : `Quota เต็ม — กู้คืนข้อมูลลง localStorage สำเร็จ: นักเรียน ${studentsCount} คน, พัสดุ ${parcelsCount} รายการ (รออัปโหลดเข้า Firestore)`,
-        writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
-      );
-
-      return { studentsCount, parcelsCount };
+      setIsSyncing(true);
+      try {
+        const writeRes = await commitWritesDirectlyToSupabase(writeItems, true);
+        if (writeRes.mode === 'supabase_direct') {
+          setStudents(nextStudents);
+          setParcels(nextParcels);
+          showToast(
+            `กู้คืนข้อมูลลง Supabase โดยตรงสำเร็จ: นักเรียน ${studentsCount} คน, พัสดุ ${parcelsCount} รายการ`,
+            'success'
+          );
+          return { studentsCount, parcelsCount };
+        }
+        showToast(
+          `กู้คืนข้อมูลลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+        return { studentsCount: 0, parcelsCount: 0 };
+      } finally {
+        setIsSyncing(false);
+      }
     },
-    [getCurrentActorAttribution, commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [getCurrentActorAttribution, commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * นำเข้าข้อมูลนักเรียนจำนวนมากลงฐานข้อมูลสำรอง (data/students-backup.json + IndexedDB)
-   * และเลือกได้ว่าต้องการพักรออัปโหลดขึ้น Firebase เวลา 00.00 น. ด้วยหรือไม่
-   */
   const bulkImportStudents = useCallback(
     async (
-      rawStudents: Omit<Student, 'ownerId' | 'createdAt' | 'updatedAt'>[],
-      stageForCloudSync: boolean = true
+      rawStudents: Omit<Student, 'ownerId' | 'createdAt' | 'updatedAt'>[]
     ): Promise<number> => {
       if (rawStudents.length === 0) return 0;
       const isoNow = new Date().toISOString();
       const sMap = new Map<string, Student>();
       for (const s of studentsRef.current) sMap.set(s.studentCode, s);
 
-      const stagedItems: PendingWriteItem[] = [];
+      const writeItems: SupabaseWriteItem[] = [];
       for (const s of rawStudents) {
         const code = formatStudentCode(s.studentCode);
+        if (!code) continue;
         const studentObj: Student = {
           ...s,
           studentCode: code,
@@ -2285,117 +1458,40 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           updatedAt: isoNow,
         };
         sMap.set(code, studentObj);
-        if (stageForCloudSync) {
-          stagedItems.push({
-            id: `students:${code}:${Date.now()}`,
-            collection: 'students',
-            docId: code,
-            action: 'upsert',
-            data: studentObj,
-            queuedAt: isoNow,
-          });
-        }
+        writeItems.push({
+          id: `students:${code}:${Date.now()}`,
+          collection: 'students',
+          docId: code,
+          action: 'upsert',
+          data: studentObj,
+        });
       }
 
       const nextStudents = Array.from(sMap.values()).sort((a, b) => a.seqNo - b.seqNo);
-      setStudents(nextStudents);
 
-      const backupRes = await saveAllStudentsToBackupDb(
-        nextStudents,
-        stageForCloudSync ? 'bulk_import_and_stage' : 'backup_db_only'
-      );
-      await saveLocalSearchCache({ students: nextStudents });
-      setStudentBackupStatus({
-        count: backupRes.count,
-        updatedAt: backupRes.updatedAt,
-        filePath: backupRes.filePath,
-        serverFileActive: backupRes.serverFileActive,
-        indexedDbActive: backupRes.indexedDbActive,
-        source: backupRes.source,
-      });
-
-      if (stageForCloudSync && stagedItems.length > 0) {
-        const writeRes = await commitWritesDirectOrFallbackToLocalStorage(stagedItems, {
-          students: nextStudents,
-        });
+      setIsSyncing(true);
+      try {
+        const writeRes = await commitWritesDirectlyToSupabase(writeItems, writeItems.length > 50);
+        if (writeRes.mode === 'supabase_direct') {
+          setStudents(nextStudents);
+          showToast(
+            `นำเข้ารายชื่อนักเรียน ${rawStudents.length} คน ลงฐานข้อมูล Supabase โดยตรงสำเร็จ (รวม ${nextStudents.length} คน)`,
+            'success'
+          );
+          return rawStudents.length;
+        }
         showToast(
-          writeRes.mode === 'firestore_direct'
-            ? `นำเข้ารายชื่อนักเรียน ${rawStudents.length} คน ลงฐานข้อมูล Firestore โดยตรงสำเร็จ (รวม ${nextStudents.length} คน)`
-            : `Quota เต็ม — บันทึกรายชื่อนักเรียน ${rawStudents.length} คน ลง localStorage และฐานข้อมูลสำรองเรียบร้อยแล้ว`,
-          writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
+          `นำเข้ารายชื่อนักเรียนลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
         );
-      } else {
-        showToast(
-          `บันทึกรายชื่อนักเรียน ${rawStudents.length} คน ลงฐานข้อมูลสำรองในเครื่องเรียบร้อยแล้ว (รวมทั้งหมด ${nextStudents.length} คน)`,
-          'success'
-        );
+        return 0;
+      } finally {
+        setIsSyncing(false);
       }
-      return rawStudents.length;
     },
-    [commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * บันทึกรายชื่อนักเรียนทั้งหมดที่มีอยู่ในระบบลงฐานข้อมูลสำรองทันที (data/students-backup.json + IndexedDB)
-   */
-  const backupAllStudentsNow = useCallback(async (): Promise<StudentBackupStatus> => {
-    const res = await saveAllStudentsToBackupDb(studentsRef.current, 'manual_full_backup');
-    await saveLocalSearchCache({ students: res.students });
-    const nextStatus: StudentBackupStatus = {
-      count: res.count,
-      updatedAt: res.updatedAt,
-      filePath: res.filePath,
-      serverFileActive: res.serverFileActive,
-      indexedDbActive: res.indexedDbActive,
-      source: res.source,
-    };
-    setStudentBackupStatus(nextStatus);
-    showToast(
-      `บันทึกรายชื่อนักเรียนทั้งหมด ${res.count} คน ลงฐานข้อมูลสำรองเรียบร้อยแล้ว (${res.filePath})`,
-      'success'
-    );
-    return nextStatus;
-  }, [showToast]);
-
-  /**
-   * กู้คืนรายชื่อนักเรียนทั้งหมดจากฐานข้อมูลสำรองกรณีเชื่อมต่อ Firestore ไม่ได้
-   */
-  const restoreStudentsFromBackupDb = useCallback(async (): Promise<number> => {
-    const backup = await loadAllStudentsFromBackupDb();
-    setStudentBackupStatus({
-      count: backup.count,
-      updatedAt: backup.updatedAt,
-      filePath: backup.filePath,
-      serverFileActive: backup.serverFileActive,
-      indexedDbActive: backup.indexedDbActive,
-      source: backup.source,
-    });
-    if (backup.students.length === 0) {
-      showToast('ยังไม่มีข้อมูลรายชื่อนักเรียนในฐานข้อมูลสำรอง', 'warning');
-      return 0;
-    }
-    const applied = applyPendingItemsToSnapshot(
-      {
-        students: backup.students,
-        parcels: parcelsRef.current,
-        members: membersRef.current,
-        rolePermissions: rolePermissionsRef.current,
-        rateLimitConfig: rateLimitRef.current,
-      },
-      pendingWritesRef.current
-    );
-    setStudents(applied.students);
-    await saveLocalSearchCache({ students: applied.students });
-    showToast(
-      `โหลดรายชื่อนักเรียนทั้งหมด ${applied.students.length} คน จากฐานข้อมูลสำรองสำเร็จ`,
-      'success'
-    );
-    return applied.students.length;
-  }, [applyPendingItemsToSnapshot, showToast]);
-
-  /**
-   * บันทึกหรือแก้ไขข้อมูลนักเรียนรายคนลงไฟล์สำรองในระบบก่อน
-   */
   const upsertSingleStudent = useCallback(
     async (student: Omit<Student, 'ownerId' | 'createdAt' | 'updatedAt'>): Promise<void> => {
       const isoNow = new Date().toISOString();
@@ -2413,67 +1509,59 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         studentObj,
         ...studentsRef.current.filter((s) => s.studentCode !== code),
       ].sort((a, b) => a.seqNo - b.seqNo);
-      setStudents(nextStudents);
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        [
-          {
-            id: `students:${code}:${Date.now()}`,
-            collection: 'students',
-            docId: code,
-            action: 'upsert',
-            data: studentObj,
-            queuedAt: isoNow,
-          },
-        ],
-        { students: nextStudents }
-      );
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `บันทึกข้อมูลนักเรียนรหัส ${code} ลงฐานข้อมูล Firestore โดยตรงสำเร็จ`
-          : `Quota เต็ม — บันทึกข้อมูลนักเรียนรหัส ${code} ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
-      );
+      const writeRes = await commitWritesDirectlyToSupabase([
+        {
+          id: `students:${code}:${Date.now()}`,
+          collection: 'students',
+          docId: code,
+          action: 'upsert',
+          data: studentObj,
+        },
+      ]);
+
+      if (writeRes.mode === 'supabase_direct') {
+        setStudents(nextStudents);
+        showToast(`บันทึกข้อมูลนักเรียนรหัส ${code} ลงฐานข้อมูล Supabase โดยตรงสำเร็จ`, 'success');
+      } else {
+        showToast(
+          `บันทึกข้อมูลนักเรียนรหัส ${code} ลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+      }
     },
-    [commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * ลบข้อมูลนักเรียนรายคนออกจากแคชและพักคำสั่งลบลงไฟล์สำรองก่อน
-   */
   const deleteStudent = useCallback(
     async (studentCode: string): Promise<void> => {
       const code = formatStudentCode(studentCode);
       const nextStudents = studentsRef.current.filter(
         (s) => s.studentCode !== code && s.studentCode !== studentCode
       );
-      setStudents(nextStudents);
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        [
-          {
-            id: `students:${code}:${Date.now()}`,
-            collection: 'students',
-            docId: code,
-            action: 'delete',
-            queuedAt: new Date().toISOString(),
-          },
-        ],
-        { students: nextStudents }
-      );
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `ลบข้อมูลนักเรียนรหัส ${code} ออกจาก Firestore โดยตรงแล้ว`
-          : `Quota เต็ม — บันทึกคำสั่งลบนักเรียนรหัส ${code} ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'info' : 'warning'
-      );
+      const writeRes = await commitWritesDirectlyToSupabase([
+        {
+          id: `students:${code}:${Date.now()}`,
+          collection: 'students',
+          docId: code,
+          action: 'delete',
+        },
+      ]);
+
+      if (writeRes.mode === 'supabase_direct') {
+        setStudents(nextStudents);
+        showToast(`ลบข้อมูลนักเรียนรหัส ${code} ออกจาก Supabase โดยตรงแล้ว`, 'info');
+      } else {
+        showToast(
+          `ลบข้อมูลนักเรียนรหัส ${code} ออกจาก Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+      }
     },
-    [commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * ลบข้อมูลนักเรียนหลายคนลงไฟล์สำรองในระบบก่อน
-   */
   const bulkDeleteStudents = useCallback(
     async (studentCodes: string[], targetLabel?: string): Promise<void> => {
       if (studentCodes.length === 0) return;
@@ -2481,36 +1569,39 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       const nextStudents = studentsRef.current.filter(
         (s) => !targetSet.has(s.studentCode) && !studentCodes.includes(s.studentCode)
       );
-      setStudents(nextStudents);
 
-      const isoNow = new Date().toISOString();
-      const stagedItems: PendingWriteItem[] = studentCodes.map((c) => {
+      const writeItems: SupabaseWriteItem[] = studentCodes.map((c) => {
         const code = formatStudentCode(c);
         return {
           id: `students:${code}:${Date.now()}`,
           collection: 'students',
           docId: code,
           action: 'delete',
-          queuedAt: isoNow,
         };
       });
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(stagedItems, {
-        students: nextStudents,
-      });
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `ลบข้อมูลนักเรียน${targetLabel ? ` (${targetLabel})` : ''} จำนวน ${studentCodes.length} คน ออกจาก Firestore โดยตรงสำเร็จ`
-          : `Quota เต็ม — บันทึกคำสั่งลบนักเรียน${targetLabel ? ` (${targetLabel})` : ''} ${studentCodes.length} คน ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'info' : 'warning'
-      );
+      setIsSyncing(true);
+      try {
+        const writeRes = await commitWritesDirectlyToSupabase(writeItems, writeItems.length > 50);
+        if (writeRes.mode === 'supabase_direct') {
+          setStudents(nextStudents);
+          showToast(
+            `ลบข้อมูลนักเรียน${targetLabel ? ` (${targetLabel})` : ''} จำนวน ${studentCodes.length} คน ออกจาก Supabase โดยตรงสำเร็จ`,
+            'info'
+          );
+        } else {
+          showToast(
+            `ลบข้อมูลนักเรียนออกจาก Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+            'error'
+          );
+        }
+      } finally {
+        setIsSyncing(false);
+      }
     },
-    [commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * ล้างข้อมูลนักเรียนทั้งหมดลงไฟล์สำรอง
-   */
   const clearAllStudents = useCallback(async () => {
     const allCodes = studentsRef.current.map((s) => s.studentCode);
     if (allCodes.length === 0) {
@@ -2520,9 +1611,6 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     await bulkDeleteStudents(allCodes, 'ทั้งหมดในระบบ');
   }, [bulkDeleteStudents, showToast]);
 
-  /**
-   * บันทึกหรือแก้ไขสมาชิกผู้ใช้ลงไฟล์สำรองในระบบก่อน
-   */
   const upsertMember = useCallback(
     async (input: UpsertMemberInput): Promise<Member> => {
       const isExisting = Boolean(
@@ -2580,35 +1668,34 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         ...membersRef.current.filter((m) => m.memberId !== generatedId),
         memberObj,
       ];
-      setMembers(nextMembers);
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        [
-          {
-            id: `members:${generatedId}:${Date.now()}`,
-            collection: 'members',
-            docId: generatedId,
-            action: 'upsert',
-            data: memberObj,
-            queuedAt: isoNow,
-          },
-        ],
-        { members: nextMembers }
-      );
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `${isExisting ? 'แก้ไขข้อมูล' : 'เพิ่ม'}สมาชิก "${memberObj.fullName}" (${memberObj.role}) ลง Firestore โดยตรงสำเร็จ`
-          : `Quota เต็ม — บันทึกสมาชิก "${memberObj.fullName}" ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
-      );
+      const writeRes = await commitWritesDirectlyToSupabase([
+        {
+          id: `members:${generatedId}:${Date.now()}`,
+          collection: 'members',
+          docId: generatedId,
+          action: 'upsert',
+          data: memberObj,
+        },
+      ]);
+
+      if (writeRes.mode === 'supabase_direct') {
+        setMembers(nextMembers);
+        showToast(
+          `${isExisting ? 'แก้ไขข้อมูล' : 'เพิ่ม'}สมาชิก "${memberObj.fullName}" (${memberObj.role}) ลง Supabase โดยตรงสำเร็จ`,
+          'success'
+        );
+      } else {
+        showToast(
+          `บันทึกสมาชิก "${memberObj.fullName}" ลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+      }
       return memberObj;
     },
-    [commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * ลบสมาชิกออกจากแคชและพักคำสั่งลบลงไฟล์สำรอง
-   */
   const deleteMember = useCallback(
     async (memberId: string): Promise<void> => {
       const target = membersRef.current.find((m) => m.memberId === memberId);
@@ -2623,36 +1710,31 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
 
       const nextMembers = membersRef.current.filter((m) => m.memberId !== memberId);
-      setMembers(nextMembers);
-      if (currentMemberId === memberId) {
-        setCurrentMemberId(null);
-      }
+      const writeRes = await commitWritesDirectlyToSupabase([
+        {
+          id: `members:${memberId}:${Date.now()}`,
+          collection: 'members',
+          docId: memberId,
+          action: 'delete',
+        },
+      ]);
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        [
-          {
-            id: `members:${memberId}:${Date.now()}`,
-            collection: 'members',
-            docId: memberId,
-            action: 'delete',
-            queuedAt: new Date().toISOString(),
-          },
-        ],
-        { members: nextMembers }
-      );
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `ลบสมาชิก "${target.fullName}" ออกจาก Firestore โดยตรงแล้ว`
-          : `Quota เต็ม — บันทึกคำสั่งลบสมาชิก "${target.fullName}" ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'info' : 'warning'
-      );
+      if (writeRes.mode === 'supabase_direct') {
+        setMembers(nextMembers);
+        if (currentMemberId === memberId) {
+          setCurrentMemberId(null);
+        }
+        showToast(`ลบสมาชิก "${target.fullName}" ออกจาก Supabase โดยตรงแล้ว`, 'info');
+      } else {
+        showToast(
+          `ลบสมาชิก "${target.fullName}" ออกจาก Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+      }
     },
-    [currentMemberId, commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [currentMemberId, commitWritesDirectlyToSupabase, showToast]
   );
 
-  /**
-   * บันทึกหรือแก้ไขสิทธิ์ของ Role ลงไฟล์สำรองในระบบก่อน
-   */
   const updateRolePermission = useCallback(
     async (
       roleId: 'admin' | 'staff' | 'teacher' | 'user',
@@ -2693,35 +1775,33 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         ...rolePermissionsRef.current.filter((rp) => rp.roleId !== roleId),
         updatedRole,
       ];
-      setRolePermissions(nextRoles);
 
-      const writeRes = await commitWritesDirectOrFallbackToLocalStorage(
-        [
-          {
-            id: `role_permissions:${roleId}:${Date.now()}`,
-            collection: 'role_permissions',
-            docId: roleId,
-            action: 'upsert',
-            data: updatedRole,
-            queuedAt: isoNow,
-          },
-        ],
-        { rolePermissions: nextRoles }
-      );
-      showToast(
-        writeRes.mode === 'firestore_direct'
-          ? `บันทึกสิทธิ์ของระดับ "${updatedRole.roleName}" ลง Firestore โดยตรงสำเร็จ`
-          : `Quota เต็ม — บันทึกสิทธิ์ของระดับ "${updatedRole.roleName}" ลง localStorage แล้ว`,
-        writeRes.mode === 'firestore_direct' ? 'success' : 'warning'
-      );
+      const writeRes = await commitWritesDirectlyToSupabase([
+        {
+          id: `role_permissions:${roleId}:${Date.now()}`,
+          collection: 'role_permissions',
+          docId: roleId,
+          action: 'upsert',
+          data: updatedRole,
+        },
+      ]);
+
+      if (writeRes.mode === 'supabase_direct') {
+        setRolePermissions(nextRoles);
+        showToast(`บันทึกสิทธิ์ของระดับ "${updatedRole.roleName}" ลง Supabase โดยตรงสำเร็จ`, 'success');
+      } else {
+        showToast(
+          `บันทึกสิทธิ์ของระดับ "${updatedRole.roleName}" ลง Supabase ไม่สำเร็จ: ${writeRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+      }
     },
-    [commitWritesDirectOrFallbackToLocalStorage, showToast]
+    [commitWritesDirectlyToSupabase, showToast]
   );
 
   // คำนวณสิทธิ์เมนูที่สมาชิกแต่ละคนมีสิทธิ์เข้าถึง
   const getEffectiveMemberMenus = useCallback(
     (member: Member): AppMenuKey[] => {
-      // ผู้ดูแลระบบหลัก (Admin) ต้องมีสิทธิ์เข้าถึงทุกเมนูของระบบเสมอ รวมถึงลบพัสดุจำนวนมากและการตั้งค่าทั้งหมด
       if (member.role === 'ผู้ดูแลระบบ') {
         return [...ALL_MENU_KEYS];
       }
@@ -2849,37 +1929,29 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     showToast('ออกจากระบบเรียบร้อยแล้ว', 'info');
   }, [showToast]);
 
-  // สรุปยอดรับเข้าพัสดุทั้งหมดรวมทุก User ในฐานข้อมูลสำรอง และรายการพร้อมอัปโหลดขึ้น Firebase
-  const parcelBackupSummary = useMemo<ParcelBackupSummary>(() => {
+  // สรุปยอดพัสดุในฐานข้อมูล Supabase แยกตามผู้ใช้งาน
+  const supabaseParcelSummary = useMemo<SupabaseParcelSummary>(() => {
     const todayYMD = getRelativeDateString(0);
     const memberById = new Map<string, Member>();
     for (const m of members) {
       memberById.set(m.memberId, m);
     }
 
-    const pendingParcelMap = new Map<string, PendingWriteItem>();
-    for (const item of pendingWrites) {
-      if (item.collection === 'parcels') {
-        pendingParcelMap.set(item.docId, item);
-      }
-    }
-
-    const userStatsMap = new Map<string, UserParcelBackupStat>();
+    const userStatsMap = new Map<string, UserParcelStat>();
     const ensureUserStat = (
       userKey: string,
       userName: string,
       userRole: string
-    ): UserParcelBackupStat => {
+    ): UserParcelStat => {
       let existing = userStatsMap.get(userKey);
       if (!existing) {
         const matchedMember = memberById.get(userKey);
         existing = {
           userKey,
-          userName: matchedMember?.fullName || userName || 'ระบบสำรองกลาง',
+          userName: matchedMember?.fullName || userName || 'ผู้ใช้งานระบบ',
           userRole: matchedMember?.role || userRole || 'ระบบ',
           totalParcels: 0,
           todayParcels: 0,
-          pendingUploadCount: 0,
           lastRecordedAt: null,
         };
         userStatsMap.set(userKey, existing);
@@ -2887,37 +1959,19 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       return existing;
     };
 
-    let todayParcelsInBackup = 0;
-    let unstagedBackupParcelsCount = 0;
-
+    let todayParcels = 0;
     for (const p of parcels) {
-      const key = p.id || p.trackingNumber;
       const pYmd = p.receivedDate || extractParcelLocalYMD(p);
       const isToday = pYmd === todayYMD;
-      if (isToday) todayParcelsInBackup++;
+      if (isToday) todayParcels++;
 
-      const pendingItem = pendingParcelMap.get(key);
-      if (!pendingItem) {
-        unstagedBackupParcelsCount++;
-      }
-
-      const userKey =
-        p.recordedByMemberId ||
-        pendingItem?.queuedByMemberId ||
-        'shared_system';
-      const userName =
-        p.recordedByName ||
-        pendingItem?.queuedByName ||
-        'ข้อมูลซิงค์กลาง / ไม่ระบุผู้บันทึก';
-      const userRole =
-        p.recordedByRole ||
-        pendingItem?.queuedByRole ||
-        'ระบบสำรองกลาง';
+      const userKey = p.recordedByMemberId || 'shared_system';
+      const userName = p.recordedByName || 'ระบบกลาง / ไม่ระบุผู้บันทึก';
+      const userRole = p.recordedByRole || 'ระบบ';
 
       const stat = ensureUserStat(userKey, userName, userRole);
       stat.totalParcels++;
       if (isToday) stat.todayParcels++;
-      if (pendingItem) stat.pendingUploadCount++;
 
       const ts = p.updatedAt || p.createdAt;
       if (ts && (!stat.lastRecordedAt || ts > stat.lastRecordedAt)) {
@@ -2925,233 +1979,306 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
     }
 
-    // รวมรายการพัสดุในคิว pendingWrites ที่ยังไม่อยู่ใน parcels array (เช่น คำสั่งลบ)
-    const existingParcelIds = new Set(parcels.map((p) => p.id || p.trackingNumber));
-    for (const item of pendingWrites) {
-      if (item.collection === 'parcels' && !existingParcelIds.has(item.docId)) {
-        const userKey = item.queuedByMemberId || 'shared_system';
-        const userName = item.queuedByName || 'ข้อมูลซิงค์กลาง / ไม่ระบุผู้บันทึก';
-        const userRole = item.queuedByRole || 'ระบบสำรองกลาง';
-        const stat = ensureUserStat(userKey, userName, userRole);
-        stat.pendingUploadCount++;
-        if (item.queuedAt && (!stat.lastRecordedAt || item.queuedAt > stat.lastRecordedAt)) {
-          stat.lastRecordedAt = item.queuedAt;
-        }
-      }
-    }
-
     const byUser = Array.from(userStatsMap.values()).sort(
       (a, b) =>
         b.totalParcels - a.totalParcels ||
         b.todayParcels - a.todayParcels ||
-        b.pendingUploadCount - a.pendingUploadCount ||
         a.userName.localeCompare(b.userName, 'th')
     );
 
     return {
-      totalParcelsInBackup: parcels.length,
-      todayParcelsInBackup,
-      pendingParcelsToUpload: pendingParcelMap.size,
-      totalPendingItemsToUpload: pendingWrites.length,
-      unstagedBackupParcelsCount,
+      totalParcels: parcels.length,
+      todayParcels,
       byUser,
-      serverFileActive: parcelBackupStatus.serverFileActive || localBackupStatus.serverFileActive,
-      indexedDbActive: parcelBackupStatus.indexedDbActive,
-      backupFilePath: parcelBackupStatus.filePath || 'data/parcels-backup.json',
-      updatedAt: parcelBackupStatus.updatedAt,
     };
-  }, [parcels, pendingWrites, members, parcelBackupStatus, localBackupStatus.serverFileActive]);
+  }, [parcels, members]);
 
-  // เตรียมพัสดุทั้งหมดในฐานข้อมูลสำรอง (ทุก User) ลงคิวพร้อมอัปโหลดขึ้น Firebase
-  const stageAllBackupParcelsForUpload = useCallback(async (): Promise<number> => {
-    const allParcels = parcelsRef.current;
-    if (allParcels.length === 0) {
-      showToast('ยังไม่มีข้อมูลพัสดุในฐานข้อมูลสำรอง', 'info');
-      return 0;
-    }
-
-    const pendingParcelKeys = new Set(
-      pendingWritesRef.current
-        .filter((item) => item.collection === 'parcels')
-        .map((item) => item.docId)
-    );
-
-    const isoNow = new Date().toISOString();
-    const actor = getCurrentActorAttribution();
-    const newItems: PendingWriteItem[] = [];
-
-    for (const p of allParcels) {
-      const key = (p.id || p.trackingNumber || '').trim();
-      if (!key || pendingParcelKeys.has(key)) continue;
-      newItems.push({
-        id: `parcels:${key}:${Date.now()}`,
-        collection: 'parcels',
-        docId: key,
-        action: 'upsert',
-        data: p,
-        queuedAt: isoNow,
-        queuedByMemberId: p.recordedByMemberId || actor.memberId,
-        queuedByName: p.recordedByName || actor.name,
-        queuedByRole: p.recordedByRole || actor.role,
-      });
-    }
-
-    await saveAllParcelsToBackupDb(allParcels, 'manual_stage_all_backup');
-
-    if (newItems.length === 0) {
-      showToast(
-        `พัสดุทั้งหมด ${allParcels.length} ชิ้น อยู่ในคิวพร้อมอัปโหลดขึ้น Firebase เรียบร้อยแล้ว`,
-        'info'
-      );
-      return 0;
-    }
-
-    await stagePendingWrites(newItems, { parcels: allParcels });
-    showToast(
-      `เตรียมพัสดุจากฐานข้อมูลสำรองเพิ่มอีก ${newItems.length} ชิ้น (รวมทั้งหมด ${pendingWritesRef.current.length} รายการพร้อมอัปโหลดขึ้น Firebase)`,
-      'success'
-    );
-    return newItems.length;
-  }, [getCurrentActorAttribution, stagePendingWrites, showToast]);
-
-  // ฟังก์ชันอัปโหลดข้อมูลจากไฟล์สำรองขึ้น Firebase (และลบไฟล์สำรองเมื่อสำเร็จ)
-  const uploadStagedToFirebaseNow = useCallback(async (): Promise<void> => {
-    await uploadStagedToFirebase({ isAutoMidnight: false });
-  }, [uploadStagedToFirebase]);
-
-  // เตรียมพัสดุทั้งหมดในฐานข้อมูลสำรอง (ทุก User) และอัปโหลดขึ้น Firebase ทันที
-  const uploadAllBackupParcelsToFirebaseNow = useCallback(async (): Promise<void> => {
-    if (parcelsRef.current.length === 0 && pendingWritesRef.current.length === 0) {
-      showToast('ยังไม่มีข้อมูลพัสดุในฐานข้อมูลสำรองสำหรับอัปโหลด', 'info');
-      return;
-    }
-
-    const pendingParcelKeys = new Set(
-      pendingWritesRef.current
-        .filter((item) => item.collection === 'parcels')
-        .map((item) => item.docId)
-    );
-    const hasUnstaged = parcelsRef.current.some(
-      (p) => !pendingParcelKeys.has((p.id || p.trackingNumber || '').trim())
-    );
-    if (hasUnstaged) {
-      await stageAllBackupParcelsForUpload();
-    }
-    await uploadStagedToFirebase({ isAutoMidnight: false });
-  }, [stageAllBackupParcelsForUpload, uploadStagedToFirebase, showToast]);
-
-  const syncPendingToFirebase = useCallback(async (): Promise<void> => {
-    if (pendingWritesRef.current.length > 0) {
-      await uploadStagedToFirebase({ isAutoMidnight: false });
-    } else {
-      await loadDataDirectlyFromFirestore();
-      showToast('ดึงข้อมูลล่าสุดจากฐานข้อมูล Firestore และอัปเดตแคชในระบบสำเร็จ', 'success');
-    }
-  }, [uploadStagedToFirebase, loadDataDirectlyFromFirestore, showToast]);
-
-  const pullFromFirebaseToLocal = useCallback(async (): Promise<void> => {
-    const res = await loadDataDirectlyFromFirestore();
+  const refreshFromSupabase = useCallback(async (): Promise<void> => {
+    const res = await loadDataDirectlyFromSupabase(false);
     if (res.success) {
+      void checkSupabaseDetailedStatus().then((details) => setSupabaseConnectionDetails(details));
       showToast(
-        `ดึงข้อมูลจาก Firebase และบันทึกรายชื่อนักเรียน ${studentsRef.current.length} คน ลงฐานข้อมูลสำรองแล้ว`,
+        `ดึงข้อมูลล่าสุดจาก Supabase สำเร็จ (นักเรียน ${studentsRef.current.length} คน · พัสดุ ${parcelsRef.current.length} ชิ้น)`,
         'success'
       );
     }
-  }, [loadDataDirectlyFromFirestore, showToast]);
-
-  const clearAllLocalData = useCallback(() => {
-    purgeLocalMachineData();
-    void clearStagedBackupAfterUpload({
-      lastAutoUploadDate: localBackupStatusRef.current.lastAutoUploadDate,
-      lastUploadedAt: new Date().toISOString(),
-    });
-    pendingWritesRef.current = [];
-    setPendingWrites([]);
-    setLocalBackupStatus((prev) => ({
-      ...prev,
-      stagingFileExists: false,
-      stagedCount: 0,
-    }));
-    showToast('ล้างข้อมูลไฟล์สำรองในระบบเรียบร้อยแล้ว', 'info');
-  }, [showToast]);
+  }, [loadDataDirectlyFromSupabase, showToast]);
 
   const signInGoogle = useCallback(async () => {
     try {
       const loggedInUser = await signInWithGooglePopup();
       showToast(`ยืนยันตัวตนบัญชี Google สำเร็จ: ${loggedInUser.email || AUTO_CLOUD_EMAIL}`, 'success');
-      await loadDataDirectlyFromFirestore();
+      await loadDataDirectlyFromSupabase(false);
     } catch {
-      showToast(
-        `ระบบเชื่อมต่ออัตโนมัติภายใต้บัญชี ${AUTO_CLOUD_EMAIL}`,
-        'success'
-      );
+      showToast(`ระบบเชื่อมต่ออัตโนมัติภายใต้บัญชี ${AUTO_CLOUD_EMAIL}`, 'success');
     }
-  }, [showToast, loadDataDirectlyFromFirestore]);
+  }, [showToast, loadDataDirectlyFromSupabase]);
 
   const signOutUser = useCallback(async () => {
     await signOutFirebaseUser();
     showToast(`ออกจากบัญชี Google (ยังคงทำงานกับฐานข้อมูลหลัก ${AUTO_CLOUD_EMAIL})`, 'info');
   }, [showToast]);
 
-  const setSyncMode = useCallback((_mode: SyncMode) => {
-    // โหมดอัตโนมัติ: ตรวจ Quota ก่อน ถ้าไม่เต็มบันทึกลง Firestore โดยตรง ถ้า Quota เต็มบันทึกลง localStorage
-  }, []);
-
-  // ตรวจสอบสถานะ Quota ของ Firestore ใหม่แบบสด (เมื่อ user กดปุ่มตรวจโควตา)
-  const recheckFirestoreQuota = useCallback(async (): Promise<FirestoreQuotaStatus> => {
-    hasShownQuotaNoticeRef.current = false;
-    const status = await checkAndSyncQuotaStatus(true);
-    if (status.available) {
-      const pendingCount = pendingWritesRef.current.length;
+  const copySupabaseSetupSql = useCallback(async (): Promise<boolean> => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(SUPABASE_SETUP_SQL);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = SUPABASE_SETUP_SQL;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
       showToast(
-        pendingCount > 0
-          ? `Firestore พร้อมใช้งานแล้ว (Quota ไม่เต็ม) — สามารถบันทึกตรงและอัปโหลดค้างใน localStorage ${pendingCount} รายการเข้า Firestore ได้ทันที`
-          : 'Firestore พร้อมใช้งานแล้ว (Quota ไม่เต็ม) — ระบบจะรับข้อมูลลงฐานข้อมูลโดยตรงทันที',
+        'คัดลอก SQL สร้างตาราง Supabase (setup.sql) แล้ว — วางใน Supabase SQL Editor แล้วกด Run ครั้งเดียว',
         'success'
       );
-    } else if (status.quotaExceeded) {
+      return true;
+    } catch {
+      showToast('ไม่สามารถคัดลอกอัตโนมัติได้ กรุณาคัดลอกจากไฟล์ supabase/setup.sql', 'error');
+      return false;
+    }
+  }, [showToast]);
+
+  // ย้ายข้อมูลจาก Firestore เดิม (ถ้ามี) และตั้งค่าเริ่มต้นเข้าสู่ Supabase โดยตรง
+  const migrateAllDataToSupabase = useCallback(async (): Promise<void> => {
+    if (isUploadingRef.current) return;
+    isUploadingRef.current = true;
+    setIsSyncing(true);
+
+    try {
+      const status = await checkAndSyncConnectionStatus(true);
+      if (status.schemaMissing) {
+        showToast(
+          'ยังไม่ได้สร้างตารางใน Supabase — กรุณากด "คัดลอก SQL สร้างตาราง" แล้วนำไปวางใน Supabase SQL Editor กด Run ก่อน 1 ครั้ง',
+          'warning'
+        );
+        return;
+      }
+      if (status.connectionFailed) {
+        showToast(
+          'ไม่สามารถเชื่อมต่อ Supabase ได้ในขณะนี้ กรุณาตรวจสอบอินเทอร์เน็ตหรือค่า SUPABASE_URL',
+          'error'
+        );
+        return;
+      }
+
+      let legacyStudents: Student[] = [];
+      let legacyParcels: Parcel[] = [];
+      let legacyMembers: Member[] = [];
+      let legacyRolePerms: RolePermission[] = [];
+      let legacyRateConfig: ParcelRateLimitConfig | null = null;
+      let firestoreReadOk = false;
+
+      try {
+        const legacy = await fetchLegacyFirestoreDataDirectly(
+          AUTO_CLOUD_OWNER_ID,
+          firebaseAuthUser?.uid
+        );
+        if (!legacy.quotaExceeded && !legacy.connectionFailed) {
+          firestoreReadOk = true;
+          legacyStudents = legacy.students;
+          legacyParcels = legacy.parcels;
+          legacyMembers = legacy.members;
+          legacyRolePerms = legacy.rolePermissions;
+          legacyRateConfig = legacy.rateLimitConfig;
+        }
+      } catch {
+        // ignore if legacy Firestore is unavailable
+      }
+
+      const studentMapMerged = new Map<string, Student>();
+      const parcelMapMerged = new Map<string, Parcel>();
+      const memberMapMerged = new Map<string, Member>();
+      const rolePermMapMerged = new Map<string, RolePermission>();
+
+      const addStudent = (s: Student) => {
+        const code = formatStudentCode(s.studentCode);
+        if (!code) return;
+        studentMapMerged.set(code, { ...s, studentCode: code, ownerId: AUTO_CLOUD_OWNER_ID });
+      };
+      const addParcel = (p: Parcel) => {
+        const key = (p.trackingNumber || p.id || '').trim();
+        if (!key) return;
+        parcelMapMerged.set(key, { ...p, id: key, trackingNumber: key, ownerId: AUTO_CLOUD_OWNER_ID });
+      };
+      const addMember = (m: Member) => {
+        if (!m.memberId) return;
+        memberMapMerged.set(m.memberId, { ...m, ownerId: AUTO_CLOUD_OWNER_ID });
+      };
+      const addRolePerm = (rp: RolePermission) => {
+        if (!rp.roleId) return;
+        rolePermMapMerged.set(rp.roleId, { ...rp, ownerId: AUTO_CLOUD_OWNER_ID });
+      };
+
+      INITIAL_MEMBERS.forEach(addMember);
+      INITIAL_ROLE_PERMISSIONS.forEach(addRolePerm);
+
+      legacyStudents.forEach(addStudent);
+      legacyParcels.forEach(addParcel);
+      legacyMembers.forEach(addMember);
+      legacyRolePerms.forEach(addRolePerm);
+
+      studentsRef.current.forEach(addStudent);
+      parcelsRef.current.forEach(addParcel);
+      membersRef.current.forEach(addMember);
+      rolePermissionsRef.current.forEach(addRolePerm);
+
+      await initializeDefaultSupabaseDataIfEmpty(AUTO_CLOUD_OWNER_ID);
+
+      const migrationItems: SupabaseWriteItem[] = [
+        ...Array.from(rolePermMapMerged.values()).map((rp) => ({
+          id: `migrate:role_permissions:${rp.roleId}:${Date.now()}`,
+          collection: 'role_permissions' as const,
+          docId: rp.roleId,
+          action: 'upsert' as const,
+          data: rp,
+        })),
+        ...Array.from(memberMapMerged.values()).map((m) => ({
+          id: `migrate:members:${m.memberId}:${Date.now()}`,
+          collection: 'members' as const,
+          docId: m.memberId,
+          action: 'upsert' as const,
+          data: m,
+        })),
+        ...Array.from(studentMapMerged.values()).map((st) => ({
+          id: `migrate:students:${st.studentCode}:${Date.now()}`,
+          collection: 'students' as const,
+          docId: st.studentCode,
+          action: 'upsert' as const,
+          data: st,
+        })),
+        ...Array.from(parcelMapMerged.values()).map((p) => ({
+          id: `migrate:parcels:${p.id || p.trackingNumber}:${Date.now()}`,
+          collection: 'parcels' as const,
+          docId: p.id || p.trackingNumber,
+          action: 'upsert' as const,
+          data: p,
+        })),
+        {
+          id: `migrate:system_settings:parcel_rate_limits:${Date.now()}`,
+          collection: 'system_settings' as const,
+          docId: 'parcel_rate_limits',
+          action: 'upsert' as const,
+          data: rateLimitRef.current || legacyRateConfig || DEFAULT_PARCEL_RATE_LIMIT_CONFIG,
+        },
+      ];
+
+      const uploadRes = await commitWritesDirectlyToSupabase(migrationItems, true);
+      if (uploadRes.mode !== 'supabase_direct') {
+        showToast(
+          `ย้ายข้อมูลเข้า Supabase ไม่สำเร็จ: ${uploadRes.errorMessage || 'กรุณาตรวจสอบการเชื่อมต่อ'}`,
+          'error'
+        );
+        return;
+      }
+
+      await loadDataDirectlyFromSupabase(true);
+      void checkSupabaseDetailedStatus().then((details) => setSupabaseConnectionDetails(details));
+
       showToast(
-        'Quota ของ Firestore ยังเต็มอยู่ — ระบบจะบันทึกลง localStorage ต่อเนื่องและให้ส่งออกหรืออัปโหลดภายหลัง',
+        `เชื่อมต่อและซิงก์ข้อมูลเข้า Supabase สำเร็จ! (${
+          firestoreReadOk ? 'รวมข้อมูลจาก Firestore เดิม + ปัจจุบัน' : 'ซิงก์ฐานข้อมูล Supabase'
+        }: นักเรียน ${studentsRef.current.length} คน · พัสดุ ${parcelsRef.current.length} ชิ้น · สมาชิก ${membersRef.current.length} คน)`,
+        'success'
+      );
+    } catch (err) {
+      showToast(
+        `เกิดข้อผิดพลาดระหว่างเชื่อมต่อ Supabase: ${
+          err instanceof Error ? err.message : 'Error'
+        }`,
+        'error'
+      );
+    } finally {
+      isUploadingRef.current = false;
+      setIsSyncing(false);
+      setSyncProgress(null);
+    }
+  }, [checkAndSyncConnectionStatus, commitWritesDirectlyToSupabase, firebaseAuthUser?.uid, loadDataDirectlyFromSupabase, showToast]);
+
+  const refreshSupabaseConnectionStatus = useCallback(
+    async (showToastNotification = false): Promise<SupabaseConnectionDetails> => {
+      setIsCheckingSupabaseStatus(true);
+      try {
+        const details = await checkSupabaseDetailedStatus();
+        setSupabaseConnectionDetails(details);
+        setLastConnectionCheckAt(details.checkedAt);
+        lastConnectionProbeTimeRef.current = Date.now();
+
+        if (!details.connected) {
+          setSupabaseSchemaMissing(false);
+          supabaseSchemaMissingRef.current = false;
+          setSupabaseConnectionStatus('disconnected');
+          supabaseConnectionStatusRef.current = 'disconnected';
+          setLastWriteMode('supabase_error');
+          if (showToastNotification) {
+            showToast(
+              `ไม่สามารถเชื่อมต่อ Supabase (${details.projectRef}) ได้ในขณะนี้ (${details.latencyMs} ms)`,
+              'warning'
+            );
+          }
+        } else if (!details.schemaReady) {
+          setSupabaseSchemaMissing(true);
+          supabaseSchemaMissingRef.current = true;
+          setSupabaseConnectionStatus('schema_missing');
+          supabaseConnectionStatusRef.current = 'schema_missing';
+          setLastWriteMode('supabase_error');
+          if (showToastNotification) {
+            showToast(
+              'เชื่อมต่อ Supabase สำเร็จ แต่ยังสร้างตารางไม่ครบ 5 ตาราง (กรุณารัน setup.sql)',
+              'warning'
+            );
+          }
+        } else {
+          setSupabaseSchemaMissing(false);
+          supabaseSchemaMissingRef.current = false;
+          setSupabaseConnectionStatus('connected');
+          supabaseConnectionStatusRef.current = 'connected';
+          setLastWriteMode('supabase_direct');
+          if (showToastNotification) {
+            const stCount = details.tables.find((t) => t.table === 'students')?.count ?? 0;
+            const pCount = details.tables.find((t) => t.table === 'parcels')?.count ?? 0;
+            showToast(
+              `เชื่อมต่อ Supabase (${details.projectRef}) สำเร็จ · ${details.latencyMs} ms · นักเรียน ${stCount} คน / พัสดุ ${pCount} ชิ้น`,
+              'success'
+            );
+          }
+        }
+        return details;
+      } finally {
+        setIsCheckingSupabaseStatus(false);
+      }
+    },
+    [showToast]
+  );
+
+  const recheckSupabaseStatus = useCallback(async (): Promise<SupabaseStatusCheck> => {
+    const [status, details] = await Promise.all([
+      checkAndSyncConnectionStatus(true),
+      checkSupabaseDetailedStatus(),
+    ]);
+    setSupabaseConnectionDetails(details);
+    if (status.available) {
+      showToast(
+        `Supabase พร้อมใช้งานแล้ว (${details.latencyMs} ms) — บันทึกข้อมูลลงฐานข้อมูล Supabase โดยตรงทันที`,
+        'success'
+      );
+    } else if (status.schemaMissing) {
+      showToast(
+        'ยังไม่ได้สร้างตารางใน Supabase (setup.sql) — กรุณากด "คัดลอก SQL สร้างตาราง" แล้วนำไปวางและกด Run ใน Supabase SQL Editor',
         'warning'
       );
     } else {
-      showToast(
-        'ยังไม่สามารถเชื่อมต่อ Firestore ได้ — ระบบจะบันทึกลง localStorage ชั่วคราว',
-        'warning'
-      );
+      showToast('ยังไม่สามารถเชื่อมต่อ Supabase ได้ในขณะนี้', 'error');
     }
     return status;
-  }, [checkAndSyncQuotaStatus, showToast]);
+  }, [checkAndSyncConnectionStatus, showToast]);
 
-  // ส่งออกข้อมูลที่บันทึกไว้ใน localStorage (รองรับทั้งคิวรอส่งและข้อมูลสำรองในเครื่อง) เป็นไฟล์ JSON
-  const exportLocalStoragePendingJson = useCallback(() => {
-    let rawPending: PendingWriteItem[] = pendingWritesRef.current;
-    try {
-      const fromLs = localStorage.getItem(LOCAL_STAGING_STORAGE_KEY);
-      if (fromLs) {
-        const parsed = JSON.parse(fromLs) as PendingWriteItem[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          rawPending = parsed;
-        }
-      }
-    } catch {
-      // fallback to ref
-    }
-
-    const pendingParcels: Parcel[] = [];
-    const pendingStudents: Student[] = [];
-    for (const item of rawPending) {
-      if (item.collection === 'parcels' && item.action !== 'delete' && item.data) {
-        pendingParcels.push(item.data as Parcel);
-      } else if (item.collection === 'students' && item.action !== 'delete' && item.data) {
-        pendingStudents.push(item.data as Student);
-      }
-    }
-
-    const usePendingOnly = pendingParcels.length > 0 || pendingStudents.length > 0;
-    const exportParcels = usePendingOnly ? pendingParcels : parcelsRef.current;
-    const exportStudents = usePendingOnly ? pendingStudents : studentsRef.current;
-
+  const exportParcelsJson = useCallback(() => {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(
@@ -3161,17 +2288,13 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     const payload = {
       meta: {
         system: 'Student Parcel Management & Tracking System',
-        source: 'localStorage',
-        scope: usePendingOnly ? 'localStorage_pending_queue' : 'localStorage_backup_cache',
-        quotaExceeded: quotaExceededRef.current,
+        source: 'Supabase',
         exportedAt: now.toISOString(),
-        pendingCount: rawPending.length,
-        parcelsCount: exportParcels.length,
-        studentsCount: exportStudents.length,
+        parcelsCount: parcelsRef.current.length,
+        studentsCount: studentsRef.current.length,
       },
-      students: exportStudents,
-      parcels: exportParcels,
-      pendingWrites: rawPending,
+      students: studentsRef.current,
+      parcels: parcelsRef.current,
     };
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -3180,40 +2303,22 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `SPMS_LOCALSTORAGE_${usePendingOnly ? 'PENDING' : 'BACKUP'}_${stamp}.json`;
+    link.download = `SPMS_SUPABASE_EXPORT_${stamp}.json`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
     showToast(
-      `ส่งออกไฟล์ JSON จาก localStorage สำเร็จ (พัสดุ ${exportParcels.length} ชิ้น, นักเรียน ${exportStudents.length} คน)`,
+      `ส่งออกไฟล์ JSON จาก Supabase สำเร็จ (พัสดุ ${parcelsRef.current.length} ชิ้น, นักเรียน ${studentsRef.current.length} คน)`,
       'success'
     );
   }, [showToast]);
 
-  // ส่งออกรายการพัสดุใน localStorage เป็นไฟล์ CSV (รองรับภาษาไทยใน Excel)
-  const exportLocalStorageParcelsCsv = useCallback(() => {
-    let rawPending: PendingWriteItem[] = pendingWritesRef.current;
-    try {
-      const fromLs = localStorage.getItem(LOCAL_STAGING_STORAGE_KEY);
-      if (fromLs) {
-        const parsed = JSON.parse(fromLs) as PendingWriteItem[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          rawPending = parsed;
-        }
-      }
-    } catch {
-      // fallback to ref
-    }
-
-    const pendingParcels = rawPending
-      .filter((item) => item.collection === 'parcels' && item.action !== 'delete' && item.data)
-      .map((item) => item.data as Parcel);
-
-    const exportParcels = pendingParcels.length > 0 ? pendingParcels : parcelsRef.current;
+  const exportParcelsCsv = useCallback(() => {
+    const exportParcels = parcelsRef.current;
     if (exportParcels.length === 0) {
-      showToast('ยังไม่มีข้อมูลพัสดุใน localStorage สำหรับส่งออก', 'warning');
+      showToast('ยังไม่มีข้อมูลพัสดุในฐานข้อมูล Supabase สำหรับส่งออก', 'warning');
       return;
     }
 
@@ -3270,16 +2375,13 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `SPMS_LOCALSTORAGE_PARCELS_${stamp}.csv`;
+    link.download = `SPMS_SUPABASE_PARCELS_${stamp}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
-    showToast(
-      `ส่งออกไฟล์ CSV จาก localStorage สำเร็จ (${exportParcels.length} รายการ)`,
-      'success'
-    );
+    showToast(`ส่งออกไฟล์ CSV สำเร็จ (${exportParcels.length} รายการ)`, 'success');
   }, [showToast]);
 
   const value = useMemo<ParcelSystemContextValue>(
@@ -3313,25 +2415,24 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       weeklyWarningPopup,
       openWeeklyWarningPopup,
       closeWeeklyWarningPopup,
-      pendingWrites,
-      localBackupStatus,
-      studentBackupStatus,
-      parcelBackupStatus,
-      parcelBackupSummary,
-      firestoreConnectionStatus,
-      lastQuotaCheckAt,
+      supabaseParcelSummary,
+      supabaseConnectionStatus,
+      lastConnectionCheckAt,
       lastWriteMode,
       quotaMetrics,
-      syncMode,
       isSyncing,
-      quotaExceeded,
+      supabaseSchemaMissing,
+      supabaseConnectionDetails,
+      isCheckingSupabaseStatus,
       syncProgress,
       toastMessage,
       clearToast,
-      setSyncMode,
-      recheckFirestoreQuota,
-      exportLocalStoragePendingJson,
-      exportLocalStorageParcelsCsv,
+      recheckSupabaseStatus,
+      refreshSupabaseConnectionStatus,
+      copySupabaseSetupSql,
+      migrateAllDataToSupabase,
+      exportParcelsJson,
+      exportParcelsCsv,
       lookupStudentByCode,
       lookupStudentWithCloudFallback,
       searchStudentsLocal,
@@ -3353,15 +2454,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       deleteStudent,
       bulkDeleteStudents,
       clearAllStudents,
-      backupAllStudentsNow,
-      restoreStudentsFromBackupDb,
-      stageAllBackupParcelsForUpload,
-      uploadAllBackupParcelsToFirebaseNow,
-      refreshFromLocalBackupServer,
-      syncPendingToFirebase,
-      uploadStagedToFirebaseNow,
-      pullFromFirebaseToLocal,
-      clearAllLocalData,
+      refreshFromSupabase,
       signInGoogle,
       signOutUser,
     }),
@@ -3395,25 +2488,24 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       weeklyWarningPopup,
       openWeeklyWarningPopup,
       closeWeeklyWarningPopup,
-      pendingWrites,
-      localBackupStatus,
-      studentBackupStatus,
-      parcelBackupStatus,
-      parcelBackupSummary,
-      firestoreConnectionStatus,
-      lastQuotaCheckAt,
+      supabaseParcelSummary,
+      supabaseConnectionStatus,
+      lastConnectionCheckAt,
       lastWriteMode,
       quotaMetrics,
-      syncMode,
       isSyncing,
-      quotaExceeded,
+      supabaseSchemaMissing,
+      supabaseConnectionDetails,
+      isCheckingSupabaseStatus,
       syncProgress,
       toastMessage,
       clearToast,
-      setSyncMode,
-      recheckFirestoreQuota,
-      exportLocalStoragePendingJson,
-      exportLocalStorageParcelsCsv,
+      recheckSupabaseStatus,
+      refreshSupabaseConnectionStatus,
+      copySupabaseSetupSql,
+      migrateAllDataToSupabase,
+      exportParcelsJson,
+      exportParcelsCsv,
       lookupStudentByCode,
       lookupStudentWithCloudFallback,
       searchStudentsLocal,
@@ -3435,15 +2527,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       deleteStudent,
       bulkDeleteStudents,
       clearAllStudents,
-      backupAllStudentsNow,
-      restoreStudentsFromBackupDb,
-      stageAllBackupParcelsForUpload,
-      uploadAllBackupParcelsToFirebaseNow,
-      refreshFromLocalBackupServer,
-      syncPendingToFirebase,
-      uploadStagedToFirebaseNow,
-      pullFromFirebaseToLocal,
-      clearAllLocalData,
+      refreshFromSupabase,
       signInGoogle,
       signOutUser,
     ]

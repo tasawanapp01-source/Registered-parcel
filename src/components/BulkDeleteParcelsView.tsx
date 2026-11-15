@@ -205,7 +205,7 @@ export const BulkDeleteParcelsView: React.FC = () => {
                 <ShieldCheck className="w-3.5 h-3.5" />
                 การดูแลของผู้ดูแลระบบ
               </span>
-              <span className="text-xs text-slate-400">Direct Live Firestore</span>
+              <span className="text-xs text-slate-400">Direct Live Supabase</span>
             </div>
             <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
               <Trash2 className="w-7 h-7 text-red-400 shrink-0" />
@@ -242,7 +242,7 @@ export const BulkDeleteParcelsView: React.FC = () => {
             <div className="flex items-center justify-between text-xs text-slate-300 mb-1.5">
               <span className="flex items-center gap-2">
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-red-400" />
-                กำลังดำเนินการลบพัสดุออกจาก Firestore...
+                กำลังดำเนินการลบพัสดุออกจาก Supabase...
               </span>
               <span className="font-mono tabular-nums">
                 {syncProgress.completed} / {syncProgress.total} รายการ ({Math.round((syncProgress.completed / Math.max(1, syncProgress.total)) * 100)}%)
@@ -504,7 +504,7 @@ export const BulkDeleteParcelsView: React.FC = () => {
                 โซนอันตราย: ลบพัสดุทั้งหมดออกจากระบบ (System Bulk Cleanse)
               </h2>
               <p className="text-xs md:text-sm text-slate-600 leading-relaxed">
-                ฟังก์ชันนี้จะทำการลบข้อมูลพัสดุออกจากฐานข้อมูล Firebase Firestore ถาวร ข้อมูลจะไม่สามารถกู้คืนได้ ยกเว้นท่านได้ทำการสำรองข้อมูลไว้แล้ว
+                ฟังก์ชันนี้จะทำการลบข้อมูลพัสดุออกจากฐานข้อมูล Supabase ถาวร ข้อมูลจะไม่สามารถกู้คืนได้ ยกเว้นท่านได้ทำการสำรองข้อมูลไว้แล้ว
               </p>
             </div>
           </div>
@@ -570,7 +570,7 @@ export const BulkDeleteParcelsView: React.FC = () => {
                   <p className="text-xs text-slate-500 mt-1 leading-relaxed">
                     ลบพัสดุทุกรายการทั้งที่ส่งมอบแล้วและยังไม่ได้รับ รวม{' '}
                     <strong className="text-red-700 font-mono">{parcels.length}</strong> ชิ้น
-                    ออกจากฐานข้อมูล Firestore ให้กลับเป็น 0
+                    ออกจากฐานข้อมูล Supabase ให้กลับเป็น 0
                   </p>
                 </div>
               </div>
@@ -814,7 +814,7 @@ export const BulkDeleteParcelsView: React.FC = () => {
                 </div>
               </div>
               <p className="text-slate-500">
-                พัสดุเหล่านี้จะถูกลบออกจากฐานข้อมูล Firebase Firestore แบบถาวรทันที
+                พัสดุเหล่านี้จะถูกลบออกจากฐานข้อมูล Supabase แบบถาวรทันที
               </p>
             </div>
 
@@ -868,7 +868,7 @@ export const BulkDeleteParcelsView: React.FC = () => {
                     : `ลบพัสดุทั้งหมดทุกสถานะในระบบ (${parcels.length} ชิ้น)`}
                 </div>
                 <p className="text-slate-600">
-                  ระบบจะทำการลบเอกสารพัสดุออกจากคอลเลกชัน Firestore โดยตรง กรุณาตรวจสอบให้แน่ใจว่าได้ทำการดาวน์โหลดไฟล์สำรองข้อมูลไว้แล้ว
+                  ระบบจะทำการลบข้อมูลพัสดุออกจากตาราง Supabase โดยตรง กรุณาตรวจสอบให้แน่ใจว่าได้ทำการดาวน์โหลดไฟล์สำรองข้อมูลไว้แล้ว
                 </p>
               </div>
 

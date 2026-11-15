@@ -18,7 +18,6 @@ import {
   AlertOctagon,
   PackageCheck,
   PackagePlus,
-  Trash2,
   AlertTriangle,
   Users,
   HeartHandshake,
@@ -28,7 +27,7 @@ import {
   Filter,
   X,
   Database,
-  UploadCloud,
+  RefreshCw,
   Download,
   FileSpreadsheet,
 } from 'lucide-react';
@@ -62,21 +61,14 @@ export const DashboardView: React.FC = () => {
     overLimitStudents,
     parcelRateLimitConfig,
     openWeeklyWarningPopup,
-    clearAllLocalData,
-    currentMember,
-    parcelBackupSummary,
-    pendingWrites,
-    quotaExceeded,
-    firestoreConnectionStatus,
+    supabaseParcelSummary,
+    supabaseConnectionStatus,
+    supabaseConnectionDetails,
     isSyncing,
-    uploadStagedToFirebaseNow,
-    stageAllBackupParcelsForUpload,
-    uploadAllBackupParcelsToFirebaseNow,
-    exportLocalStoragePendingJson,
-    exportLocalStorageParcelsCsv,
+    refreshFromSupabase,
+    exportParcelsJson,
+    exportParcelsCsv,
   } = useParcelSystem();
-
-  const isAdmin = currentMember?.role === 'ผู้ดูแลระบบ';
 
   const [studentSearchKeyword, setStudentSearchKeyword] = React.useState<string>('');
   const [watchlistFilter, setWatchlistFilter] = React.useState<
@@ -301,17 +293,6 @@ export const DashboardView: React.FC = () => {
             แดชบอร์ดสรุปสถิติและวิเคราะห์ช่วงเวลาพีคสุด (Analytics Dashboard)
           </h1>
         </div>
-
-        {isAdmin && (students.length > 0 || parcels.length > 0) && (
-          <button
-            type="button"
-            onClick={clearAllLocalData}
-            className="min-h-[44px] px-4 py-2.5 bg-white border border-red-200 hover:bg-red-50 text-red-700 text-xs font-semibold rounded-xl transition-colors flex items-center gap-2 self-start md:self-auto cursor-pointer"
-          >
-            <Trash2 className="w-4 h-4" />
-            <span>ล้างข้อมูลในเครื่องทั้งหมด</span>
-          </button>
-        )}
       </div>
 
       {/* ตัวเลขสรุป KPI รวมสถานะพัสดุ (Tabular Numerals) */}
@@ -388,7 +369,7 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
-      {/* สรุปยอดรับเข้าพัสดุรวมทุก User ในฐานข้อมูลสำรอง & สถานะพร้อมอัปโหลด */}
+      {/* สรุปยอดรับเข้าพัสดุรวมทุก User ในฐานข้อมูล Supabase */}
       <section className="bg-white border border-indigo-200 rounded-2xl p-6 space-y-5 shadow-xs">
         <div className="flex flex-col gap-3.5 border-b border-slate-100 pb-4">
           <div className="flex items-start gap-3">
@@ -398,29 +379,28 @@ export const DashboardView: React.FC = () => {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-base font-bold text-slate-900">
-                  สถานะการบันทึก (Firestore / localStorage) & สรุปยอดรับเข้าพัสดุรวมทุก User
+                  สถานะการบันทึก Supabase โดยตรง & สรุปยอดรับเข้าพัสดุรวมทุก User
                 </h2>
                 <span
                   className={`text-[11px] font-bold px-2 py-0.5 rounded-md border ${
-                    quotaExceeded
-                      ? 'bg-rose-50 text-rose-800 border-rose-300'
-                      : firestoreConnectionStatus === 'offline_fallback'
+                    supabaseConnectionStatus === 'schema_missing'
                       ? 'bg-amber-50 text-amber-900 border-amber-300'
+                      : supabaseConnectionStatus === 'disconnected'
+                      ? 'bg-rose-50 text-rose-800 border-rose-300'
                       : 'bg-emerald-50 text-emerald-800 border-emerald-200'
                   }`}
                 >
-                  {quotaExceeded
-                    ? 'Quota เต็ม · บันทึกลง localStorage'
-                    : firestoreConnectionStatus === 'offline_fallback'
-                    ? 'ออฟไลน์ · บันทึกลง localStorage'
-                    : 'Quota ปกติ · รับลง Firestore โดยตรง'}
-                </span>
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 font-semibold">
-                  {parcelBackupSummary.backupFilePath}
+                  {supabaseConnectionStatus === 'schema_missing'
+                    ? 'ยังไม่ได้สร้างตารางใน Supabase'
+                    : supabaseConnectionStatus === 'disconnected'
+                    ? 'ไม่สามารถเชื่อมต่อ Supabase ได้'
+                    : supabaseConnectionDetails?.connected
+                    ? `Supabase ออนไลน์ · ${supabaseConnectionDetails.projectRef} (${supabaseConnectionDetails.latencyMs} ms)`
+                    : 'Supabase ออนไลน์ · บันทึกตรงเข้าฐานข้อมูล'}
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                บันทึกข้อมูลลง Firestore โดยตรงทันที / หาก Quota เต็มจะแจ้งเตือนและบันทึกลง localStorage พร้อมส่งออกหรืออัปโหลดภายหลัง ({parcelBackupSummary.byUser.length} User)
+                ข้อมูลทั้งหมดเชื่อมต่อและบันทึกลงฐานข้อมูล Supabase โดยตรงทันที ไม่ใช้ localStorage ({supabaseParcelSummary.byUser.length} User)
               </p>
             </div>
           </div>
@@ -428,70 +408,39 @@ export const DashboardView: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2 pt-2.5 border-t border-slate-100">
             <button
               type="button"
-              onClick={exportLocalStoragePendingJson}
+              onClick={exportParcelsJson}
               className="min-h-[40px] px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-              <span>ส่งออก JSON (localStorage)</span>
+              <span>ส่งออก JSON</span>
             </button>
             <button
               type="button"
-              onClick={exportLocalStorageParcelsCsv}
+              onClick={exportParcelsCsv}
               className="min-h-[40px] px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
               <span>ส่งออก CSV</span>
             </button>
-
-            {pendingWrites.length > 0 && (
-              <button
-                type="button"
-                onClick={() => void uploadStagedToFirebaseNow()}
-                disabled={isSyncing}
-                className="min-h-[40px] px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                <UploadCloud className="w-4 h-4 shrink-0" />
-                <span>อัปโหลดจาก localStorage เข้า Firestore ({pendingWrites.length})</span>
-              </button>
-            )}
-
-            {parcelBackupSummary.unstagedBackupParcelsCount > 0 && (
-              <button
-                type="button"
-                onClick={() => void stageAllBackupParcelsForUpload()}
-                disabled={isSyncing}
-                className="min-h-[40px] px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold rounded-xl transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                <Clock className="w-4 h-4 text-amber-700 shrink-0" />
-                <span>
-                  เตรียมพัสดุสำรองพร้อมอัปโหลด (+{parcelBackupSummary.unstagedBackupParcelsCount})
-                </span>
-              </button>
-            )}
-
-            {parcelBackupSummary.totalParcelsInBackup > 0 && (
-              <button
-                type="button"
-                onClick={() => void uploadAllBackupParcelsToFirebaseNow()}
-                disabled={isSyncing}
-                className="min-h-[40px] px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                <UploadCloud className="w-4 h-4 shrink-0" />
-                <span>
-                  อัปโหลดทั้งหมดเข้า Firestore ({parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น)
-                </span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => void refreshFromSupabase()}
+              disabled={isSyncing}
+              className="min-h-[40px] px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>รีเฟรชข้อมูลจาก Supabase</span>
+            </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
           <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-200">
             <span className="text-[11px] font-semibold text-indigo-800 block">
-              พัสดุทั้งหมดในฐานข้อมูลสำรอง (ทุก User)
+              พัสดุทั้งหมดใน Supabase (ทุก User)
             </span>
             <div className="text-2xl font-mono font-extrabold text-indigo-950 tabular-nums mt-1">
-              {parcelBackupSummary.totalParcelsInBackup.toLocaleString()} ชิ้น
+              {supabaseParcelSummary.totalParcels.toLocaleString()} ชิ้น
             </div>
           </div>
 
@@ -500,32 +449,23 @@ export const DashboardView: React.FC = () => {
               รับเข้าวันนี้ (ทุก User)
             </span>
             <div className="text-2xl font-mono font-extrabold text-emerald-900 tabular-nums mt-1">
-              {parcelBackupSummary.todayParcelsInBackup.toLocaleString()} ชิ้น
-            </div>
-          </div>
-
-          <div className="p-4 rounded-xl bg-amber-50/80 border border-amber-200">
-            <span className="text-[11px] font-semibold text-amber-900 block">
-              คิวพร้อมอัปโหลดขึ้น Firebase
-            </span>
-            <div className="text-2xl font-mono font-extrabold text-amber-950 tabular-nums mt-1">
-              {parcelBackupSummary.totalPendingItemsToUpload.toLocaleString()} รายการ
+              {supabaseParcelSummary.todayParcels.toLocaleString()} ชิ้น
             </div>
           </div>
 
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
             <span className="text-[11px] font-semibold text-slate-600 block">
-              พัสดุสำรองที่ยังไม่เข้าคิวส่ง
+              จำนวนผู้บันทึกในระบบ
             </span>
             <div className="text-2xl font-mono font-extrabold text-slate-900 tabular-nums mt-1">
-              {parcelBackupSummary.unstagedBackupParcelsCount.toLocaleString()} ชิ้น
+              {supabaseParcelSummary.byUser.length.toLocaleString()} User
             </div>
           </div>
         </div>
 
-        {parcelBackupSummary.byUser.length === 0 ? (
+        {supabaseParcelSummary.byUser.length === 0 ? (
           <div className="border border-dashed border-slate-300 rounded-xl p-6 text-center text-xs text-slate-500">
-            ยังไม่มีข้อมูลพัสดุในฐานข้อมูลสำรอง
+            ยังไม่มีข้อมูลพัสดุในฐานข้อมูล Supabase
           </div>
         ) : (
           <div className="overflow-x-auto border border-slate-200 rounded-xl">
@@ -534,14 +474,13 @@ export const DashboardView: React.FC = () => {
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold">
                   <th className="py-3 px-4">ผู้บันทึก / ผู้ใช้งาน (User)</th>
                   <th className="py-3 px-4">บทบาท (Role)</th>
-                  <th className="py-3 px-4 text-right">ยอดรับเข้าทั้งหมด (สำรอง)</th>
+                  <th className="py-3 px-4 text-right">ยอดรับเข้าทั้งหมด</th>
                   <th className="py-3 px-4 text-right">รับเข้าวันนี้</th>
-                  <th className="py-3 px-4 text-right">รออัปโหลดขึ้น Firebase</th>
                   <th className="py-3 px-4 text-right">บันทึกล่าสุด</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {parcelBackupSummary.byUser.map((u) => (
+                {supabaseParcelSummary.byUser.map((u) => (
                   <tr key={u.userKey} className="hover:bg-slate-50/80 transition-colors">
                     <td className="py-2.5 px-4 font-bold text-slate-900">{u.userName}</td>
                     <td className="py-2.5 px-4">
@@ -554,15 +493,6 @@ export const DashboardView: React.FC = () => {
                     </td>
                     <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-700 tabular-nums">
                       {u.todayParcels.toLocaleString()} ชิ้น
-                    </td>
-                    <td className="py-2.5 px-4 text-right font-mono font-bold tabular-nums">
-                      {u.pendingUploadCount > 0 ? (
-                        <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900">
-                          {u.pendingUploadCount.toLocaleString()} รายการ
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">0 รายการ</span>
-                      )}
                     </td>
                     <td className="py-2.5 px-4 text-right font-mono text-slate-500 text-[11px]">
                       {u.lastRecordedAt
