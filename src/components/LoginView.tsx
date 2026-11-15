@@ -8,18 +8,16 @@ import {
   PackageCheck,
   ShieldCheck,
   Boxes,
-  Database,
-  RefreshCw,
+  Search,
 } from 'lucide-react';
 import { useParcelSystem } from '../context/ParcelSystemContext';
 
-export const LoginView: React.FC = () => {
-  const {
-    loginWithCredentials,
-    supabaseConnectionDetails,
-    isCheckingSupabaseStatus,
-    refreshSupabaseConnectionStatus,
-  } = useParcelSystem();
+interface LoginViewProps {
+  onOpenPublicSearch?: () => void;
+}
+
+export const LoginView: React.FC<LoginViewProps> = ({ onOpenPublicSearch }) => {
+  const { loginWithCredentials } = useParcelSystem();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -153,70 +151,34 @@ export const LoginView: React.FC = () => {
           </div>
         </div>
 
-        {/* Supabase Database Connection Status Card */}
-        <div className="mt-4 bg-white/90 backdrop-blur-sm border border-slate-200/90 rounded-2xl p-3.5 shadow-sm text-xs">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                  !supabaseConnectionDetails || isCheckingSupabaseStatus
-                    ? 'bg-slate-400 animate-pulse'
-                    : supabaseConnectionDetails.connected && supabaseConnectionDetails.schemaReady
-                    ? 'bg-emerald-500'
-                    : 'bg-amber-500'
-                }`}
-              />
-              <Database className="w-4 h-4 text-indigo-600 shrink-0" />
-              <span className="font-bold text-slate-800 truncate">
-                {isCheckingSupabaseStatus
-                  ? 'กำลังตรวจสอบการเชื่อมต่อ Supabase...'
-                  : !supabaseConnectionDetails
-                  ? 'กำลังเตรียมเชื่อมต่อ Supabase...'
-                  : supabaseConnectionDetails.connected && supabaseConnectionDetails.schemaReady
-                  ? 'เชื่อมต่อฐานข้อมูล Supabase สำเร็จ'
-                  : supabaseConnectionDetails.connected
-                  ? 'เชื่อมต่อ Supabase แล้ว (รอสร้างตาราง)'
-                  : 'ไม่สามารถเชื่อมต่อ Supabase'}
-              </span>
+        {/* Public Parcel Search Link Card (No Login Required) */}
+        <a
+          href="#search"
+          onClick={(e) => {
+            if (onOpenPublicSearch) {
+              e.preventDefault();
+              onOpenPublicSearch();
+            }
+          }}
+          className="mt-4 group block bg-white/95 hover:bg-indigo-50/80 border border-indigo-200 hover:border-indigo-400 rounded-2xl p-4 shadow-sm transition-all"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-indigo-600 group-hover:bg-indigo-700 text-white flex items-center justify-center shrink-0 shadow-xs transition-colors">
+                <Search className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-sm font-extrabold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                  ค้นหา & ติดตามพัสดุ
+                </div>
+                <div className="text-xs text-slate-500 truncate">
+                  ค้นหาจากเลขพัสดุ ชื่อ-นามสกุล หรือรหัสนักเรียน
+                </div>
+              </div>
             </div>
-
-            <button
-              type="button"
-              onClick={() => void refreshSupabaseConnectionStatus(false)}
-              disabled={isCheckingSupabaseStatus}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-[11px] transition-colors cursor-pointer disabled:opacity-50 shrink-0"
-              title="ตรวจสอบการเชื่อมต่อ Supabase อีกครั้ง"
-            >
-              <RefreshCw className={`w-3 h-3 ${isCheckingSupabaseStatus ? 'animate-spin' : ''}`} />
-              <span>ตรวจสอบ</span>
-            </button>
+            <ArrowRight className="w-4 h-4 text-indigo-600 shrink-0 transition-transform group-hover:translate-x-0.5" />
           </div>
-
-          {supabaseConnectionDetails && (
-            <div className="mt-2 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-slate-500">
-              <span className="font-mono text-slate-700">
-                {supabaseConnectionDetails.projectRef}.supabase.co ·{' '}
-                <strong className="text-emerald-700">{supabaseConnectionDetails.latencyMs} ms</strong>
-              </span>
-              {supabaseConnectionDetails.schemaReady && (
-                <span className="font-mono text-slate-600">
-                  นักเรียน{' '}
-                  <strong className="text-slate-900">
-                    {(
-                      supabaseConnectionDetails.tables.find((t) => t.table === 'students')?.count ?? 0
-                    ).toLocaleString()}
-                  </strong>{' '}
-                  · พัสดุ{' '}
-                  <strong className="text-slate-900">
-                    {(
-                      supabaseConnectionDetails.tables.find((t) => t.table === 'parcels')?.count ?? 0
-                    ).toLocaleString()}
-                  </strong>
-                </span>
-              )}
-            </div>
-          )}
-        </div>
+        </a>
 
         {/* Footer info */}
         <p className="text-center text-xs text-slate-500 mt-4">

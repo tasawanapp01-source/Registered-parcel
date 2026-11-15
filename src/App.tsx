@@ -43,6 +43,7 @@ import { BulkDeleteParcelsView } from './components/BulkDeleteParcelsView';
 import { BackupRestoreView } from './components/BackupRestoreView';
 import { ParcelRateLimitView } from './components/ParcelRateLimitView';
 import { LoginView } from './components/LoginView';
+import { PublicParcelSearchView } from './components/PublicParcelSearchView';
 
 interface MainWorkspaceProps {
   currentMember: Member;
@@ -1493,8 +1494,41 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
 
 const AppContent: React.FC = () => {
   const { currentMember } = useParcelSystem();
+  const [publicView, setPublicView] = useState<'login' | 'search'>(() =>
+    typeof window !== 'undefined' && window.location.hash === '#search' ? 'search' : 'login'
+  );
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      if (window.location.hash === '#search') {
+        setPublicView('search');
+      } else if (window.location.hash === '#login' || window.location.hash === '') {
+        setPublicView('login');
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  const openPublicSearch = () => {
+    setPublicView('search');
+    if (typeof window !== 'undefined' && window.location.hash !== '#search') {
+      window.location.hash = '#search';
+    }
+  };
+
+  const openLogin = () => {
+    setPublicView('login');
+    if (typeof window !== 'undefined' && window.location.hash === '#search') {
+      window.location.hash = '#login';
+    }
+  };
+
   if (!currentMember) {
-    return <LoginView />;
+    if (publicView === 'search') {
+      return <PublicParcelSearchView onGoToLogin={openLogin} />;
+    }
+    return <LoginView onOpenPublicSearch={openPublicSearch} />;
   }
   return <MainWorkspace currentMember={currentMember} />;
 };

@@ -1088,7 +1088,7 @@ export async function findParcelInSupabaseFallback(
         .eq('student_code', formattedCode)
         .order('created_at', { ascending: false })
         .limit(30);
-      readsCount += (data?.length || 1);
+      readsCount += data?.length || 1;
       if (data) {
         for (const row of data) {
           const p = fromParcelRow(row as Record<string, unknown>);
@@ -1097,6 +1097,31 @@ export async function findParcelInSupabaseFallback(
       }
     } catch {
       // ignore
+    }
+  }
+
+  if (resultMap.size === 0 && clean.length >= 2) {
+    const safePattern = clean.replace(/[%_,()]/g, '').trim();
+    if (safePattern.length >= 2) {
+      try {
+        const { data } = await supabase
+          .from('parcels')
+          .select('*')
+          .or(
+            `tracking_number.ilike.%${safePattern}%,student_full_name.ilike.%${safePattern}%,student_code.ilike.%${safePattern}%`
+          )
+          .order('created_at', { ascending: false })
+          .limit(30);
+        readsCount += data?.length || 1;
+        if (data) {
+          for (const row of data) {
+            const p = fromParcelRow(row as Record<string, unknown>);
+            resultMap.set(p.id, p);
+          }
+        }
+      } catch {
+        // ignore
+      }
     }
   }
 
