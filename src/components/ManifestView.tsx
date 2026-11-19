@@ -474,7 +474,7 @@ export const ManifestView: React.FC = () => {
   }, []);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 print:space-y-0">
       <div className="no-print space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-slate-200 pb-5">
           <div>

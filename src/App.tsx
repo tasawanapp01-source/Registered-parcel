@@ -191,7 +191,7 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 pb-20 md:pb-10">
+    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 pb-20 md:pb-10 print:min-h-0 print:pb-0 print:bg-white">
       {/* Top Bar: 2 แถว (แถว 1: ชื่อระบบ & เมนูนำทางรวมถึงเมนูตั้งค่า, แถว 2: ปุ่มผู้ดูแลระบบหลัก (Admin) และปุ่มออกจากระบบ รวมเป็นปุ่มเดียว) */}
       <header className="no-print sticky top-0 z-30 bg-white shadow-xs">
         {/* แถวที่ 1: ชื่อระบบ & เมนูนำทางหลัก */}
@@ -803,7 +803,7 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
       )}
 
       {/* พื้นที่แสดงเนื้อหาหลัก (Main Viewport) */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 md:px-8 py-6 md:py-8">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 md:px-8 py-6 md:py-8 print:max-w-none print:p-0 print:m-0">
         {/* แถบนำทางด่วนสำหรับเมนูตั้งค่าระบบ (Settings Navigation Bar) เมื่ออยู่ในหน้าใดๆ ในหมวดตั้งค่า */}
         {isSettingsActive && (
           <div className="no-print mb-6 bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-4 shadow-xs animate-in fade-in">

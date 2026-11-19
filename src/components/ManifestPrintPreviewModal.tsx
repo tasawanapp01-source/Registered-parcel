@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Printer,
   X,
@@ -51,12 +52,12 @@ interface PageChunk {
 const SEPARATE_BY_DORM_VALUE = 'SEPARATE_BY_DORM';
 
 // A4 printable area at 96dpi minus 6mm margins on each side and safety buffer:
-// Portrait: 210mm x 297mm -> 198mm x 280mm (~748px x 1058px)
-// Landscape: 297mm x 210mm -> 285mm x 193mm (~1077px x 729px)
+// Portrait: 210mm x 297mm -> 198mm x 274mm (~748px x 1030px usable)
+// Landscape: 297mm x 210mm -> 285mm x 188mm (~1077px x 706px usable)
 const PRINT_WIDTH_PX_PORTRAIT = 748;
 const PRINT_WIDTH_PX_LANDSCAPE = 1077;
-const PRINT_HEIGHT_PX_PORTRAIT = 1058;
-const PRINT_HEIGHT_PX_LANDSCAPE = 729;
+const PRINT_HEIGHT_PX_PORTRAIT = 1030;
+const PRINT_HEIGHT_PX_LANDSCAPE = 706;
 
 function buildFallbackChunks(parcels: Parcel[], perPage: number): PageChunk[] {
   if (parcels.length === 0) {
@@ -703,7 +704,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
     );
   };
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -715,7 +716,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
         @media print {
           @page {
             size: A4 ${orientation};
-            margin: 6mm 6mm 6mm 6mm;
+            margin: 6mm;
           }
           html, body {
             background-color: #FFFFFF !important;
@@ -725,9 +726,11 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             width: 100% !important;
             max-width: 100% !important;
             height: auto !important;
+            min-height: 0 !important;
             overflow: visible !important;
             color: #000000 !important;
           }
+          #root,
           .no-print,
           .print-container {
             display: none !important;
@@ -742,6 +745,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             margin: 0 !important;
             overflow: visible !important;
             height: auto !important;
+            min-height: 0 !important;
             width: 100% !important;
             max-width: 100% !important;
             display: block !important;
@@ -762,26 +766,31 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             margin: 0 !important;
             width: 100% !important;
             max-width: 100% !important;
-            height: ${isLandscape ? '193mm' : '280mm'} !important;
-            min-height: ${isLandscape ? '193mm' : '280mm'} !important;
-            max-height: ${isLandscape ? '193mm' : '280mm'} !important;
+            height: ${isLandscape ? '188mm' : '274mm'} !important;
+            min-height: 0 !important;
+            max-height: ${isLandscape ? '188mm' : '274mm'} !important;
             display: flex !important;
             flex-direction: column !important;
             box-sizing: border-box !important;
             background-color: #FFFFFF !important;
             background: #FFFFFF !important;
             overflow: hidden !important;
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
             break-after: page !important;
             page-break-after: always !important;
           }
-          .manifest-a4-page:last-child {
+          .manifest-a4-page:last-child,
+          .manifest-a4-page:last-of-type {
             break-after: auto !important;
             page-break-after: auto !important;
           }
 
           .print-page-number {
             color: #000000 !important;
-            font-weight: 700 !important;
+            font-weight: 800 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
           }
 
           /* ตารางรายการพัสดุ */
@@ -936,9 +945,11 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
         }}
         className="no-print fixed -left-[99999px] top-0 pointer-events-none opacity-0 bg-white text-slate-900"
       >
-        <div data-measure="top-bar" className="flex items-center justify-between gap-2 mb-1 text-[10px] font-mono">
-          <span>ใบนำส่ง</span>
-          <span className="font-bold tabular-nums">หน้าที่ 1 / 1</span>
+        <div data-measure="top-bar" className="flex items-center justify-between gap-2 mb-1.5 pb-1 border-b border-slate-200 text-xs font-mono">
+          <span className="text-[10.5px] font-semibold text-slate-600">ใบนำส่ง</span>
+          <span className="font-extrabold text-xs tabular-nums px-2 py-0.5 rounded bg-slate-100 border border-slate-300 text-slate-900">
+            หน้าที่ 1 / 1
+          </span>
         </div>
 
         {manifestGroups.map((group) => (
@@ -965,14 +976,13 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
 
         <footer
           data-measure="footer"
-          className="pt-1.5 border-t border-slate-300 flex items-end justify-between gap-3 text-[10px] text-slate-600"
+          className="pt-1.5 border-t border-slate-300 text-[10px] text-slate-600 space-y-0.5"
         >
-          <div className="space-y-0.5 min-w-0">
-            <div className="font-mono">รวมทั้งสิ้น 0 รายการ</div>
-            <div className="text-[9px] font-sans">* เลขพัสดุสีดำ/เขียวเข้ม/แดง</div>
+          <div className="font-mono">
+            รวมทั้งสิ้น 000 รายการ (ส่งมอบแล้ว 000 / รอส่งมอบ 000 / ติดนิติการ 000) · หน้านี้ลำดับที่ 1–25
           </div>
-          <div className="shrink-0 font-mono font-bold text-[10.5px] tabular-nums">
-            หน้าที่ 1 / 1
+          <div className="text-[9px] font-sans">
+            * เลขพัสดุ: สีดำ = บาร์โค้ดปกติ · สีเขียวเข้ม = ขึ้นต้นด้วย &quot;PRT&quot; และเลขพัสดุที่ทำการสุ่มด้วยระบบ · สีแดง = พัสดุติดนิติการ
           </div>
         </footer>
       </div>
@@ -999,7 +1009,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 truncate">
-                  {currentDormSummaryText} · รวม {totalDisplayedParcels} ชิ้น · พิมพ์ซ้ำหัวกระดาษและเลขหน้าทุกหน้า
+                  {currentDormSummaryText} · รวม {totalDisplayedParcels} ชิ้น · พิมพ์ซ้ำหัวกระดาษและแสดง &quot;หน้าที่ / &quot; ด้านบนทุกหน้า
                 </p>
               </div>
             </div>
@@ -1202,14 +1212,14 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
                     : 'w-[794px] min-h-[1123px]'
                 }`}
               >
-                {/* แถวบนสุด: เลขหน้าที่ มุมบนขวาของกระดาษ */}
-                <div className="flex items-center justify-between gap-2 mb-1 text-[10px] font-mono shrink-0">
-                  <span className="text-[9.5px] text-slate-500 truncate">
+                {/* แถวบนสุด: เลขหน้าที่ (หน้าที่ X / Y) ด้านบนของทุกหน้า */}
+                <div className="flex items-center justify-between gap-2 mb-1.5 pb-1 border-b border-slate-200 text-xs font-mono shrink-0">
+                  <span className="text-[10.5px] font-semibold text-slate-600 truncate">
                     {group.dormitory === 'ALL'
                       ? 'ใบนำส่งรวมทุกหอพัก'
                       : `${group.theme.name} (${group.theme.basketCode})`}
                   </span>
-                  <span className="font-bold text-slate-900 tabular-nums shrink-0 print-page-number">
+                  <span className="font-extrabold text-xs text-slate-900 tabular-nums shrink-0 px-2 py-0.5 rounded bg-slate-100 border border-slate-300 print-page-number">
                     หน้าที่ {pageNumber} / {totalPages}
                   </span>
                 </div>
@@ -1241,26 +1251,21 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
                   </table>
                 </div>
 
-                {/* ท้ายกระดาษ: สรุปข้อมูล + เลขหน้าที่ มุมล่างขวาของกระดาษ */}
-                <footer className="mt-auto pt-1.5 border-t border-slate-300 flex items-end justify-between gap-3 text-[10px] text-slate-600 shrink-0">
-                  <div className="space-y-0.5 min-w-0">
-                    <div className="font-mono">
-                      รวมทั้งสิ้น <strong>{group.parcels.length}</strong> รายการ (ส่งมอบแล้ว {signedCount} / รอส่งมอบ {unsignedCount}
-                      {legalHoldCount > 0 ? ` / ติดนิติการ ${legalHoldCount}` : ''})
-                      {totalPages > 1 && chunk.parcels.length > 0 && (
-                        <span className="ml-1.5 text-slate-500">
-                          · หน้านี้ลำดับที่ {chunk.startIndex + 1}–{chunk.startIndex + chunk.parcels.length}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[9px] text-slate-500 font-sans">
-                      * เลขพัสดุ: <span className="font-bold text-slate-900">สีดำ</span> = บาร์โค้ดปกติ ·{' '}
-                      <span className="font-bold text-emerald-800">สีเขียวเข้ม</span> = ขึ้นต้นด้วย &quot;PRT&quot; และเลขพัสดุที่ทำการสุ่มด้วยระบบ ·{' '}
-                      <span className="font-bold text-red-600">สีแดง</span> = พัสดุติดนิติการ
-                    </div>
+                {/* ท้ายกระดาษ: สรุปข้อมูลรายการนำส่ง (ย้ายเลขหน้าที่ไปด้านบนของทุกหน้าแล้ว) */}
+                <footer className="mt-auto pt-1.5 border-t border-slate-300 text-[10px] text-slate-600 shrink-0 space-y-0.5">
+                  <div className="font-mono">
+                    รวมทั้งสิ้น <strong>{group.parcels.length}</strong> รายการ (ส่งมอบแล้ว {signedCount} / รอส่งมอบ {unsignedCount}
+                    {legalHoldCount > 0 ? ` / ติดนิติการ ${legalHoldCount}` : ''})
+                    {totalPages > 1 && chunk.parcels.length > 0 && (
+                      <span className="ml-1.5 text-slate-500">
+                        · หน้านี้ลำดับที่ {chunk.startIndex + 1}–{chunk.startIndex + chunk.parcels.length}
+                      </span>
+                    )}
                   </div>
-                  <div className="shrink-0 text-right font-mono font-bold text-[10.5px] text-slate-900 tabular-nums print-page-number">
-                    หน้าที่ {pageNumber} / {totalPages}
+                  <div className="text-[9px] text-slate-500 font-sans">
+                    * เลขพัสดุ: <span className="font-bold text-slate-900">สีดำ</span> = บาร์โค้ดปกติ ·{' '}
+                    <span className="font-bold text-emerald-800">สีเขียวเข้ม</span> = ขึ้นต้นด้วย &quot;PRT&quot; และเลขพัสดุที่ทำการสุ่มด้วยระบบ ·{' '}
+                    <span className="font-bold text-red-600">สีแดง</span> = พัสดุติดนิติการ
                   </div>
                 </footer>
               </section>
@@ -1268,6 +1273,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
           })}
         </div>
       </main>
-    </div>
+    </div>,
+    document.body
   );
 };
