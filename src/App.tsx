@@ -506,10 +506,10 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
           </nav>
         </div>
 
-        {/* แถวที่ 2: สถานะการเชื่อมต่อ Supabase โดยตรง + ยอดพัสดุรวมและปุ่มรีเฟรช */}
-        <div className="bg-slate-50/95 border-b border-slate-200/90 px-4 md:px-8 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+        {/* แถวที่ 2: สถานะการเชื่อมต่อ Supabase โดยตรง + ยอดพัสดุรวมและปุ่มรีเฟรช (แสดงเฉพาะบนคอมพิวเตอร์) */}
+        <div className="hidden lg:flex bg-slate-50/95 border-b border-slate-200/90 px-4 md:px-8 py-2 flex-wrap items-center justify-between gap-2.5 text-xs">
           {/* ข้อมูลสถานะ Supabase + ยอดพัสดุรวมทุก User */}
-          <div className="hidden lg:flex items-center flex-wrap gap-2 text-slate-600">
+          <div className="flex items-center flex-wrap gap-2 text-slate-600">
             <button
               type="button"
               onClick={() => void refreshSupabaseConnectionStatus(true)}
@@ -592,64 +592,7 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
             </span>
           </div>
 
-          {/* แถบย่อบนมือถือ/แท็บเล็ต แสดงสถานะ Supabase */}
-          <div className="flex lg:hidden items-center flex-wrap gap-1.5 text-[11px]">
-            <button
-              type="button"
-              onClick={() => void refreshSupabaseConnectionStatus(true)}
-              disabled={isCheckingSupabaseStatus}
-              className={`inline-flex items-center gap-1 font-bold px-2 py-1 rounded-lg border cursor-pointer disabled:opacity-70 ${
-                supabaseSchemaMissing
-                  ? 'bg-amber-50 text-amber-900 border-amber-300'
-                  : supabaseConnectionStatus === 'disconnected'
-                  ? 'bg-rose-50 text-rose-800 border-rose-300'
-                  : 'bg-emerald-50 text-emerald-800 border-emerald-200'
-              }`}
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  isCheckingSupabaseStatus
-                    ? 'bg-indigo-500 animate-ping'
-                    : supabaseSchemaMissing
-                    ? 'bg-amber-500'
-                    : supabaseConnectionStatus === 'disconnected'
-                    ? 'bg-rose-500'
-                    : 'bg-emerald-500'
-                }`}
-              />
-              <span>
-                {isCheckingSupabaseStatus
-                  ? 'กำลังตรวจ...'
-                  : supabaseSchemaMissing
-                  ? 'รอสร้างตาราง SQL'
-                  : supabaseConnectionStatus === 'disconnected'
-                  ? 'ออฟไลน์'
-                  : supabaseConnectionDetails?.connected
-                  ? `Supabase ออนไลน์ (${supabaseConnectionDetails.latencyMs}ms)`
-                  : 'Supabase ตรง'}
-              </span>
-            </button>
-            <span className="inline-flex items-center gap-1 font-semibold text-indigo-800 bg-indigo-50 px-2 py-1 rounded-lg border border-indigo-200">
-              <Database className="w-3 h-3 text-indigo-600 shrink-0" />
-              <span>
-                พัสดุ:{' '}
-                <strong className="font-mono tabular-nums">
-                  {supabaseParcelSummary.totalParcels.toLocaleString()}
-                </strong>
-              </span>
-            </span>
-            <button
-              type="button"
-              onClick={() => void refreshFromSupabase()}
-              disabled={isSyncing}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white text-slate-800 border border-slate-300 font-bold cursor-pointer disabled:opacity-50"
-            >
-              <RefreshCw className={`w-3 h-3 text-indigo-600 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>รีเฟรช</span>
-            </button>
-          </div>
-
-          {/* ปุ่มผู้ดูแลระบบหลัก (Admin) และปุ่มออกจากระบบ รวมให้เป็นปุ่มเดียวกัน */}
+          {/* ปุ่มผู้ดูแลระบบหลัก (Admin) และปุ่มออกจากระบบ รวมให้เป็นปุ่มเดียวกัน (แสดงเฉพาะบนคอมพิวเตอร์) */}
           <div className="flex items-center ml-auto">
             <div className="inline-flex items-stretch bg-white border border-slate-300 hover:border-slate-400 rounded-xl shadow-2xs transition-all overflow-hidden">
               {/* ส่วนที่ 1: สถานะผู้ดูแลระบบหลัก / โปรไฟล์ผู้ใช้งาน */}

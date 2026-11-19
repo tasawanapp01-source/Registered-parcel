@@ -658,6 +658,9 @@ export const EditInboundParcelModal: React.FC<EditInboundParcelModalProps> = ({
                 onChange={(e) => setCategory(e.target.value as ParcelCategory)}
                 className="w-full min-h-[40px] px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:border-slate-900 focus:outline-none disabled:bg-slate-100 disabled:text-slate-400"
               >
+                {category && !PARCEL_CATEGORIES.includes(category) && (
+                  <option value={category}>{category}</option>
+                )}
                 {PARCEL_CATEGORIES.map((cat) => (
                   <option key={cat} value={cat}>
                     {cat}

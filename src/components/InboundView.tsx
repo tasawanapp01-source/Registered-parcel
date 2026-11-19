@@ -306,6 +306,10 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
   const recentParcelsSectionRef = useRef<HTMLElement | null>(null);
   const dismissedDuplicateTrackingRef = useRef<string>('');
   const [isSupabaseSummaryOpen, setIsSupabaseSummaryOpen] = useState<boolean>(false);
+  const [isDormGuideOpen, setIsDormGuideOpen] = useState<boolean>(false);
+  const [isRecentParcelsOpen, setIsRecentParcelsOpen] = useState<boolean>(false);
+  // ขั้นตอนที่กำลังเปิดใช้งาน (1 = สแกนรหัสพัสดุ, 2 = กรอกข้อมูลนักเรียน และดึงข้อมูล, 3 = กรอกประเภทสิ่งของ, 4 = เลือกสถานะการคัดแยกพัสดุ, null = ย่อทุกขั้นตอน)
+  const [activeInboundStep, setActiveInboundStep] = useState<1 | 2 | 3 | 4 | null>(1);
   const [activeSectionId, setActiveSectionId] = useState<
     'step1' | 'step2' | 'step3' | 'step4' | 'dorm' | 'recent'
   >('step1');
@@ -519,6 +523,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         recordLocalSearchSaving();
         populateStudentFields(partialCodeMatch);
         setIsStudentSelected(true);
+        setActiveInboundStep(3);
         return;
       }
 
@@ -528,6 +533,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         lastAutoPopulatedCodeRef.current = cloudRes.student.studentCode;
         populateStudentFields(cloudRes.student);
         setIsStudentSelected(true);
+        setActiveInboundStep(3);
         return;
       }
 
@@ -559,6 +565,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       recordLocalSearchSaving();
       populateStudentFields(matched);
       setIsStudentSelected(true);
+      setActiveInboundStep(3);
       return;
     }
 
@@ -771,6 +778,15 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     [findDuplicateParcel, sixDigitsInput]
   );
 
+  const advanceFromStep1ToStep2 = useCallback(() => {
+    setActiveInboundStep(2);
+    setTimeout(() => {
+      if (studentSearchInputRef.current) {
+        studentSearchInputRef.current.focus();
+      }
+    }, 100);
+  }, []);
+
   const handleSixDigitsChange = useCallback(
     (val: string) => {
       const cleaned = val.toUpperCase().replace(/[^A-Z0-9-]/g, '');
@@ -781,7 +797,10 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         handleSwitchTrackingMode('full');
         handleTrackingChange(cleaned);
         playScanBeep();
-        checkAndNotifyDuplicate(cleaned);
+        const dup = checkAndNotifyDuplicate(cleaned);
+        if (!dup) {
+          advanceFromStep1ToStep2();
+        }
         return;
       }
 
@@ -794,16 +813,23 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
 
       if (filtered.length === 6) {
         playScanBeep();
-        // ไม่ต้องแสดง popup เมื่อกรอกเลข 6 ตัวท้าย (แสดงเฉพาะตอนที่สแกนโค้ดเท่านั้น)
-        // ระบบจะตรวจจับผ่าน detectedDuplicateParcel เพื่อไม่อนุญาตให้บันทึกโดยอัตโนมัติ
-        setTimeout(() => {
-          if (studentSearchInputRef.current) {
-            studentSearchInputRef.current.focus();
-          }
-        }, 120);
+        // หากเลขไม่ซ้ำ ให้ย่อกล่อง 1 แสดงเลขพัสดุ และเปิดกล่อง 2 กรอกข้อมูลนักเรียน
+        const dup = findDuplicateParcel(computed, filtered);
+        if (!dup) {
+          advanceFromStep1ToStep2();
+        }
       }
     },
-    [courier, includeCourierPrefix, computeTrackingFromSixDigits, handleSwitchTrackingMode, handleTrackingChange, checkAndNotifyDuplicate]
+    [
+      courier,
+      includeCourierPrefix,
+      computeTrackingFromSixDigits,
+      handleSwitchTrackingMode,
+      handleTrackingChange,
+      checkAndNotifyDuplicate,
+      findDuplicateParcel,
+      advanceFromStep1ToStep2,
+    ]
   );
 
   const handleToggleCourierPrefix = useCallback(
@@ -821,39 +847,33 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     (selectedCourier: string) => {
       setCourier(selectedCourier);
       setFormError(null);
+      dismissedDuplicateTrackingRef.current = '';
 
       if (selectedCourier === 'ผู้ปกครองฝากส่ง') {
-        // เมื่อกดปุ่มผู้ปกครองส่ง ให้สร้างรหัสพัสดุ 13 ตัวไม่ซ้ำในฐานข้อมูลและลงท้ายด้วย RD
+        // เมื่อกดปุ่มผู้ปกครองส่ง ให้สร้างรหัสพัสดุ 13 ตัวไม่ซ้ำในฐานข้อมูลและลงท้ายด้วย RD แล้วเปิดกล่องข้อมูลนักเรียน
         const uniqueParentCode = generateUniqueParentTrackingNumber(parcels);
         setTrackingNumber(uniqueParentCode);
         setTrackingInputMode('full');
         setSixDigitsInput('');
         setLastScannedCode(null);
-        setTimeout(() => {
-          if (studentSearchInputRef.current) {
-            studentSearchInputRef.current.focus();
-          }
-        }, 80);
+        playScanBeep();
+        advanceFromStep1ToStep2();
         return;
       }
 
-      // เมื่อกดปุ่ม เลือกบริษัทขนส่งได้ ให้แสดงในรูปแบบของ กรอกเลขพัสดุ 6 ตัวสุดท้าย
+      // เมื่อกดปุ่มเลือกบริษัทขนส่ง ให้แสดงในรูปแบบกรอกเลขพัสดุ 6 ตัวสุดท้าย และสุ่มรหัสพัสดุใหม่ไม่ซ้ำในฐานข้อมูล
       setTrackingInputMode('six_digits');
 
-      // หากสลับจาก ผู้ปกครองฝากส่ง เป็นขนส่งอื่น แล้วเลขพัสดุขึ้นต้นด้วย PRT ให้ล้างออก
-      if (trackingNumber.trim().toUpperCase().startsWith('PRT') && selectedCourier !== 'ผู้ปกครองฝากส่ง') {
-        setTrackingNumber('');
-      }
+      const { sixDigits, fullTracking } = generateUniqueSixDigitTracking(
+        parcels,
+        selectedCourier,
+        includeCourierPrefix
+      );
 
-      const currentSix = sixDigitsInput || trackingNumber.trim().replace(/[^A-Z0-9]/gi, '').slice(-6);
-      if (currentSix) {
-        setSixDigitsInput(currentSix);
-        const computed = computeTrackingFromSixDigits(currentSix, selectedCourier, includeCourierPrefix);
-        setTrackingNumber(computed);
-      } else {
-        const computed = computeTrackingFromSixDigits('', selectedCourier, includeCourierPrefix);
-        setTrackingNumber(computed);
-      }
+      setSixDigitsInput(sixDigits);
+      setTrackingNumber(fullTracking);
+      setLastScannedCode(null);
+      playScanBeep();
 
       setTimeout(() => {
         if (sixDigitsInputRef.current) {
@@ -862,7 +882,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         }
       }, 80);
     },
-    [parcels, sixDigitsInput, trackingNumber, includeCourierPrefix, computeTrackingFromSixDigits]
+    [parcels, includeCourierPrefix, advanceFromStep1ToStep2]
   );
 
   // จัดการเมื่อสแกนบาร์โค้ดผ่านกล้องสำเร็จ
@@ -883,13 +903,9 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         return;
       }
 
-      setTimeout(() => {
-        if (studentSearchInputRef.current) {
-          studentSearchInputRef.current.focus();
-        }
-      }, 150);
+      advanceFromStep1ToStep2();
     },
-    [handleTrackingChange, checkAndNotifyDuplicate]
+    [handleTrackingChange, checkAndNotifyDuplicate, advanceFromStep1ToStep2]
   );
 
   const requestCameraPermissionAndOpenScanner = useCallback(() => {
@@ -1031,9 +1047,9 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
   const isFormComplete =
     isTrackingValid && !isDuplicateTracking && isStudentValid && isCategoryValid && isStatusValid;
 
-  const handleSubmitInbound = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitInboundParcel = async (overrideStatus?: ParcelStatus) => {
     setFormError(null);
+    const effectiveStatus = overrideStatus ?? status;
 
     let finalTracking = trackingNumber.trim();
 
@@ -1052,6 +1068,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     } else if (trackingInputMode === 'six_digits') {
       if (!sixDigitsInput.trim()) {
         setFormError('กรุณากรอกเลขพัสดุ 6 ตัวสุดท้ายในขั้นตอนที่ 1');
+        setActiveInboundStep(1);
         if (sixDigitsInputRef.current) sixDigitsInputRef.current.focus();
         return;
       }
@@ -1062,11 +1079,13 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       const dup = findDuplicateParcel(finalTracking, sixDigitsInput);
       if (dup) {
         setFormError(`ไม่อนุญาตให้บันทึกลงทะเบียนพัสดุ เนื่องจากบาร์โค้ดหรือเลขพัสดุ "${finalTracking}" ได้ถูกใช้งานแล้วในระบบ`);
+        setActiveInboundStep(1);
         return;
       }
     } else {
       if (!finalTracking) {
-        setFormError('กรุณายิงบาร์โค้ดผ่านกล้อง หรือกรอกเลขพัสดุในขั้นตอนที่ 1');
+        setFormError('กรุณาสแกนรหัสพัสดุ หรือกรอกเลขพัสดุในขั้นตอนที่ 1');
+        setActiveInboundStep(1);
         if (trackingInputRef.current) trackingInputRef.current.focus();
         return;
       }
@@ -1075,6 +1094,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       const dup = findDuplicateParcel(finalTracking, sixDigitsInput);
       if (dup) {
         setFormError(`ไม่อนุญาตให้บันทึกลงทะเบียนพัสดุ เนื่องจากบาร์โค้ดหรือเลขพัสดุ "${finalTracking}" ได้ถูกใช้งานแล้วในระบบ`);
+        setActiveInboundStep(1);
         return;
       }
     }
@@ -1082,6 +1102,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     // ตรวจสอบความซ้ำซ้อนระดับฟอร์มอีกครั้งเพื่อป้องกันการบันทึกเมื่อเลขซ้ำ
     if (isDuplicateTracking) {
       setFormError('ไม่อนุญาตให้บันทึกลงทะเบียนพัสดุ เนื่องจากบาร์โค้ดหรือเลขพัสดุนี้ได้ถูกใช้งานแล้วในระบบ');
+      setActiveInboundStep(1);
       return;
     }
 
@@ -1089,21 +1110,24 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       studentCodeInput.trim() || (/^\d+$/.test(studentSearchInput.trim()) ? studentSearchInput.trim() : '')
     );
     const finalStudentName = studentFullName.trim();
-    if (!finalStudentCode && !finalStudentName && status !== 'พัสดุไม่ทราบเจ้าของ') {
+    if (!finalStudentCode && !finalStudentName && effectiveStatus !== 'พัสดุไม่ทราบเจ้าของ') {
       setFormError('กรุณากรอกข้อมูลนักเรียน หรือค้นหาด้วยรหัสนักเรียน ชื่อ, นามสกุล, ชื่อเล่น หรือหอพักในขั้นตอนที่ 2 (หรือเลือกสถานะ "พัสดุไม่ทราบเจ้าของ")');
+      setActiveInboundStep(2);
       if (studentSearchInputRef.current) studentSearchInputRef.current.focus();
       return;
     }
 
     if (!category) {
       setFormError('กรุณาเลือกประเภทสิ่งของในขั้นตอนที่ 3 ก่อนบันทึก');
+      setActiveInboundStep(3);
       return;
     }
 
-    // ตรวจสอบการกรอกประเภทสิ่งของ กรณีเลือก "อื่นๆ" หรือ "เครื่องสำอาง"
+    // ตรวจสอบการกรอกประเภทสิ่งของ กรณีเลือก "อื่นๆ"
     const trimmedDetail = customCategoryDetail.trim();
     if (category === 'อื่นๆ' && !trimmedDetail) {
       setFormError('กรุณาระบุรายละเอียดประเภทสิ่งของในช่อง "อื่นๆ ให้กรอกว่าเป็นอะไร"');
+      setActiveInboundStep(3);
       if (customCategoryInputRef.current) customCategoryInputRef.current.focus();
       return;
     }
@@ -1112,13 +1136,14 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       ? `${category} (${trimmedDetail})`
       : category;
 
-    if (!status) {
+    if (!effectiveStatus) {
       setFormError('กรุณาเลือกสถานะการคัดแยกพัสดุในขั้นตอนที่ 4 (เช่น ลงทะเบียนรับพัสดุ, ติดต่องานพยาบาล, พัสดุติดนิติการ หรือพัสดุไม่ทราบเจ้าของ)');
+      setActiveInboundStep(4);
       return;
     }
 
     let finalNote = note.trim();
-    if (status === 'ติดนิติการ') {
+    if (effectiveStatus === 'ติดนิติการ') {
       if (legalHoldReasonType === 'สั่งของเกินกำหนด') {
         finalNote = 'สั่งของเกินกำหนด';
       } else if (legalHoldReasonType === 'ของผิดระเบียบ') {
@@ -1139,7 +1164,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       trackingNumber: finalTracking,
       studentCode: finalStudentCode || 'UNKNOWN',
       category: formattedCategory,
-      status,
+      status: effectiveStatus,
       courier,
       note: finalNote,
       isSixDigitsInput: courier === 'ผู้ปกครองฝากส่ง' ? false : (trackingInputMode === 'six_digits'),
@@ -1148,7 +1173,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
           finalStudentName ||
           (matchedStudent
             ? `${matchedStudent.prefix}${matchedStudent.firstName} ${matchedStudent.lastName}`
-            : status === 'พัสดุไม่ทราบเจ้าของ'
+            : effectiveStatus === 'พัสดุไม่ทราบเจ้าของ'
             ? 'พัสดุไม่ทราบเจ้าของ'
             : '-'),
         nickname:
@@ -1174,20 +1199,21 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     }
 
     setSaveSuccessMessage(
-      `บันทึกลงฐานข้อมูล Supabase โดยตรงสำเร็จ: ${savedParcel.trackingNumber} (${savedParcel.studentFullName || 'ไม่ทราบเจ้าของ'}) หอพัก: ${savedParcel.dormitory || '-'}`
+      `บันทึกลงฐานข้อมูล Supabase โดยตรงสำเร็จ: ${savedParcel.trackingNumber} (${savedParcel.studentFullName || 'ไม่ทราบเจ้าของ'}) หอพัก: ${savedParcel.dormitory || '-'} · สถานะ: ${savedParcel.status}`
     );
 
-    // เมื่อบันทึกแล้วให้ล้างฟอร์มทั้งหมด และ disable ปุ่มบันทึกลงทะเบียนพัสดุทันที
+    // เมื่อบันทึกแล้วให้ล้างฟอร์มทั้งหมด ย่อกล่อง 2-4 และกลับไปยังขั้นตอนที่ 1 เพื่อเตรียมพร้อมการสแกนพัสดุชิ้นต่อไป
     setTrackingNumber('');
     setSixDigitsInput('');
     setLastScannedCode(null);
     setCourier('Flash Express');
+    setTrackingInputMode('six_digits');
     setCategory(null);
     setCustomCategoryDetail('');
     setNote('');
     setLegalHoldReasonType(null);
     setCustomLegalNote('');
-    setStatus(null); // รีเซ็ตสถานะกลับเป็น null เพื่อให้ปุ่มบันทึก disable ทันที
+    setStatus(null);
 
     // เคลียร์กล่องรับข้อมูล ค้นหาข้อมูลนักเรียน และข้อมูลผู้รับทั้งหมด
     setStudentCodeInput('');
@@ -1203,22 +1229,27 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     setStudentFetchFeedback(null);
     setFormError(null);
 
-    // เมื่อบันทึกลงทะเบียนพัสดุ เรียบร้อย ให้กลับขึ้นไปยัง ช่อง ยิงบาร์โค้ด หรือกรอกเลขพัสดุ อัตโนมัติ
+    // กลับไปยังเริ่มต้นเตรียมพร้อมการสแกนพัสดุชิ้นต่อไป (เปิดกล่อง 1 และย่อกล่องอื่นๆ)
+    setActiveInboundStep(1);
+
     if (step1SectionRef.current) {
       step1SectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     setTimeout(() => {
-      if (trackingInputMode === 'six_digits' && courier !== 'ผู้ปกครองฝากส่ง') {
-        if (sixDigitsInputRef.current) {
-          sixDigitsInputRef.current.focus();
-          sixDigitsInputRef.current.select();
-        }
+      if (sixDigitsInputRef.current) {
+        sixDigitsInputRef.current.focus();
+        sixDigitsInputRef.current.select();
       } else if (trackingInputRef.current) {
         trackingInputRef.current.focus();
         trackingInputRef.current.select();
       }
     }, 150);
+  };
+
+  const handleSubmitInbound = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitInboundParcel();
   };
 
   const todayIsoStr = useMemo(() => getRelativeDateString(0), []);
@@ -1407,7 +1438,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       observer.observe(s.el);
     }
     return () => observer.disconnect();
-  }, []);
+  }, [isDormGuideOpen, isRecentParcelsOpen]);
 
   const inboundSections = useMemo(
     () => [
@@ -1447,10 +1478,18 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
 
   const scrollToSection = useCallback(
     (sectionId: 'step1' | 'step2' | 'step3' | 'step4' | 'dorm' | 'recent') => {
-      const target = inboundSections.find((s) => s.id === sectionId);
-      if (!target?.ref.current) return;
-      target.ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      setActiveSectionId(sectionId);
+      if (sectionId === 'step1') setActiveInboundStep(1);
+      if (sectionId === 'step2') setActiveInboundStep(2);
+      if (sectionId === 'step3') setActiveInboundStep(3);
+      if (sectionId === 'step4') setActiveInboundStep(4);
+      if (sectionId === 'dorm') setIsDormGuideOpen(true);
+      if (sectionId === 'recent') setIsRecentParcelsOpen(true);
+
+      setTimeout(() => {
+        const target = inboundSections.find((s) => s.id === sectionId);
+        target?.ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setActiveSectionId(sectionId);
+      }, 40);
     },
     [inboundSections]
   );
@@ -1475,13 +1514,35 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     [inboundSections, activeSectionId, scrollToSection]
   );
 
-  const handleScrollToRecentParcels = useCallback(() => {
-    scrollToSection('recent');
-  }, [scrollToSection]);
+  const handleToggleRecentParcels = useCallback(() => {
+    setIsRecentParcelsOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        setTimeout(() => {
+          recentParcelsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 60);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleDormGuide = useCallback(() => {
+    setIsDormGuideOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        setTimeout(() => {
+          dormGuideSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 60);
+      }
+      return next;
+    });
+  }, []);
 
   const handleScrollToScan = useCallback(() => {
-    scrollToSection('step1');
+    setActiveInboundStep(1);
     setTimeout(() => {
+      step1SectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setActiveSectionId('step1');
       if (trackingInputMode === 'six_digits' && courier !== 'ผู้ปกครองฝากส่ง') {
         sixDigitsInputRef.current?.focus({ preventScroll: true });
         sixDigitsInputRef.current?.select();
@@ -1489,8 +1550,8 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
         trackingInputRef.current?.focus({ preventScroll: true });
         trackingInputRef.current?.select();
       }
-    }, 320);
-  }, [trackingInputMode, courier, scrollToSection]);
+    }, 120);
+  }, [trackingInputMode, courier]);
 
   const lastHandledQuickActionRef = useRef<number>(0);
 
@@ -1499,6 +1560,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
     lastHandledQuickActionRef.current = quickAction.nonce;
 
     if (quickAction.type === 'recent') {
+      setIsRecentParcelsOpen(true);
       const timer = setTimeout(() => {
         recentParcelsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 60);
@@ -1514,6 +1576,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
 
     if (quickAction.type === 'scan') {
       setFormError(null);
+      setActiveInboundStep(1);
       setTrackingInputMode('full');
       setIsScannerOpen(true);
       const timer = setTimeout(() => {
@@ -1528,18 +1591,16 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
       {/* Hidden container สำหรับสแกนบาร์โค้ดจากไฟล์รูปภาพ */}
       <div id="inbound-barcode-file-reader" className="hidden" />
 
-      {/* ส่วนหัวหน้าจอรับเข้าพัสดุ */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-200 pb-5">
+      {/* ส่วนหัวหน้าจอรับเข้าพัสดุ + ปุ่มอยู่บรรทัดใหม่ (แสดงเฉพาะบนคอมพิวเตอร์) */}
+      <div className="hidden lg:flex flex-col gap-3 border-b border-slate-200 pb-5">
         <div>
-          <p className="text-xs font-medium text-slate-500">
-            จุดคัดแยกพัสดุส่วนกลาง · รองรับการยิงบาร์โค้ดผ่านกล้องอุปกรณ์ และดึงข้อมูลนักเรียนอัตโนมัติ
-          </p>
-          <h1 className="text-2xl md:text-3xl font-bold text-slate-900 mt-1">
+          <h1 className="text-2xl md:text-3xl font-bold text-slate-900">
             ระบบลงทะเบียนรับเข้าและคัดแยกพัสดุประจำหอพัก (Inbound)
           </h1>
         </div>
 
-        <div className="no-print flex flex-wrap items-center gap-2 self-start md:self-auto shrink-0">
+        {/* ปุ่มสถานะ Supabase, ดูรายการพัสดุที่รับเข้าล่าสุด และ จุดคัดแยกลงตะกร้าหอพัก (ขึ้นบรรทัดใหม่) */}
+        <div className="no-print flex flex-wrap items-center gap-2 pt-1">
           {/* ไอคอนเปิด/ปิดสถานะการบันทึกข้อมูล Supabase โดยตรง & ยอดรับเข้ารวมทุก User */}
           <button
             type="button"
@@ -1575,7 +1636,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                 }`}
               />
             </span>
-            <span className="hidden sm:inline">สถานะ Supabase</span>
+            <span>สถานะ Supabase</span>
             <span
               className={`px-1.5 py-0.5 rounded-md font-mono text-[11px] font-extrabold tabular-nums ${
                 isSupabaseSummaryOpen
@@ -1594,23 +1655,61 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
 
           <button
             type="button"
-            onClick={handleScrollToRecentParcels}
-            title="เลื่อนลงไปดูรายการพัสดุที่รับเข้าล่าสุดทันที"
-            className="min-h-[42px] px-4 py-2 bg-white hover:bg-indigo-50 active:scale-98 text-slate-800 hover:text-indigo-900 border-2 border-slate-200 hover:border-indigo-300 rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-2 cursor-pointer shrink-0"
+            onClick={handleToggleRecentParcels}
+            aria-expanded={isRecentParcelsOpen}
+            title="คลิกเพื่อเปิด/ซ่อนรายการพัสดุที่รับเข้าล่าสุด"
+            className={`min-h-[42px] px-4 py-2 border-2 rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-2 cursor-pointer shrink-0 ${
+              isRecentParcelsOpen
+                ? 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600 ring-2 ring-indigo-500/25'
+                : 'bg-white hover:bg-indigo-50 text-slate-800 hover:text-indigo-900 border-slate-200 hover:border-indigo-300'
+            }`}
           >
-            <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
+            <Layers className={`w-4 h-4 shrink-0 ${isRecentParcelsOpen ? 'text-white' : 'text-indigo-600'}`} />
             <span>ดูรายการพัสดุที่รับเข้าล่าสุด</span>
-            <span className="px-1.5 py-0.5 rounded-md bg-indigo-100 text-indigo-800 font-mono text-[11px] font-extrabold tabular-nums">
+            <span
+              className={`px-1.5 py-0.5 rounded-md font-mono text-[11px] font-extrabold tabular-nums ${
+                isRecentParcelsOpen
+                  ? 'bg-white/20 text-white'
+                  : 'bg-indigo-100 text-indigo-800'
+              }`}
+            >
               {allFilteredRecentParcels.length}
             </span>
-            <ArrowDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+            <ChevronDown
+              className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${
+                isRecentParcelsOpen ? 'rotate-180 text-white' : 'text-slate-500'
+              }`}
+            />
+          </button>
+
+          <button
+            type="button"
+            onClick={handleToggleDormGuide}
+            aria-expanded={isDormGuideOpen}
+            title="คลิกเพื่อเปิด/ซ่อนจุดคัดแยกลงตะกร้าหอพัก (Color-Coding Guide)"
+            className={`min-h-[42px] px-4 py-2 border-2 rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-2 cursor-pointer shrink-0 ${
+              isDormGuideOpen
+                ? 'bg-emerald-700 hover:bg-emerald-800 text-white border-emerald-700 ring-2 ring-emerald-500/25'
+                : 'bg-white hover:bg-emerald-50 text-slate-800 hover:text-emerald-950 border-slate-200 hover:border-emerald-300'
+            }`}
+          >
+            <span
+              className="w-3 h-3 rounded-full shrink-0 border border-black/15"
+              style={{ backgroundColor: dormTheme.hexColor }}
+            />
+            <span>จุดคัดแยกลงตะกร้าหอพัก (Color-Coding Guide)</span>
+            <ChevronDown
+              className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${
+                isDormGuideOpen ? 'rotate-180 text-white' : 'text-slate-500'
+              }`}
+            />
           </button>
         </div>
       </div>
 
-      {/* สรุปยอดรับเข้าพัสดุทั้งหมดรวมทุก User ในฐานข้อมูล Supabase (ซ่อนไว้และเปิดเมื่อคลิกไอคอน) */}
+      {/* สรุปยอดรับเข้าพัสดุทั้งหมดรวมทุก User ในฐานข้อมูล Supabase (ซ่อนไว้และเปิดเมื่อคลิกไอคอน เฉพาะบนคอมพิวเตอร์) */}
       {isSupabaseSummaryOpen && (
-      <section className="no-print bg-white border border-indigo-200/90 rounded-2xl p-4 md:p-5 shadow-xs space-y-3.5 animate-in fade-in duration-150">
+      <section className="hidden lg:block no-print bg-white border border-indigo-200/90 rounded-2xl p-4 md:p-5 shadow-xs space-y-3.5 animate-in fade-in duration-150">
         <div className="flex flex-col gap-3">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
@@ -1788,326 +1887,532 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
 
       {/* ฟอร์มลงทะเบียนรับเข้าพัสดุ: 1 แถว 1 กรอบข้อมูล */}
       <form onSubmit={handleSubmitInbound} className="space-y-6">
-        {/* ยิงบาร์โค้ด หรือกรอกเลขพัสดุ */}
-        <section ref={step1SectionRef} data-section-id="step1" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <label
-              htmlFor={trackingInputMode === 'six_digits' ? 'six-digits-input' : 'tracking-number-input'}
-              className="text-base font-bold text-slate-900 flex items-center gap-2"
-            >
-              <Barcode className="w-5 h-5 text-slate-700" />
-              <span>ยิงบาร์โค้ด หรือกรอกเลขพัสดุ</span>
-            </label>
+        {/* 1. สแกนรหัสพัสดุ */}
+        <section
+          ref={step1SectionRef}
+          data-section-id="step1"
+          className={`scroll-mt-28 bg-white border rounded-2xl transition-all ${
+            activeInboundStep === 1
+              ? 'border-slate-900/30 ring-2 ring-slate-900/10 p-5 md:p-6 space-y-4 shadow-xs'
+              : 'border-slate-200 p-4 sm:px-5 sm:py-4 hover:border-slate-300'
+          }`}
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+              <button
+                type="button"
+                onClick={() => setActiveInboundStep((prev) => (prev === 1 ? null : 1))}
+                className="text-base font-bold text-slate-900 flex items-center gap-2 cursor-pointer text-left"
+              >
+                <span
+                  className={`w-6 h-6 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${
+                    isTrackingValid && !isDuplicateTracking
+                      ? 'bg-emerald-600 text-white'
+                      : activeInboundStep === 1
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-200 text-slate-700'
+                  }`}
+                >
+                  {isTrackingValid && !isDuplicateTracking && activeInboundStep !== 1 ? (
+                    <Check className="w-3.5 h-3.5" />
+                  ) : (
+                    '1'
+                  )}
+                </span>
+                <Barcode className="w-5 h-5 text-slate-700 shrink-0" />
+                <span>สแกนรหัสพัสดุ</span>
+              </button>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="min-h-[38px] px-3 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer">
-                  <ImageUp className="w-4 h-4 shrink-0" />
-                  <span>{isScanningFile ? 'กำลังอ่าน...' : 'ถ่ายรูป/เลือกรูปบาร์โค้ด'}</span>
-                  <input
-                    ref={barcodeFileInputRef}
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    onChange={handleScanBarcodeFromImage}
-                    className="sr-only"
-                  />
-                </label>
-              </div>
+              {activeInboundStep !== 1 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {trackingNumber.trim() ? (
+                    <>
+                      <span
+                        className={`px-2.5 py-1 rounded-lg font-mono text-xs sm:text-sm font-extrabold border ${
+                          isDuplicateTracking
+                            ? 'bg-red-50 text-red-700 border-red-300'
+                            : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                        }`}
+                      >
+                        {trackingNumber}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                        {courier}
+                      </span>
+                      {isDuplicateTracking && (
+                        <span className="text-[11px] font-bold text-red-700 bg-red-100 px-2 py-0.5 rounded-md">
+                          เลขซ้ำ!
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-xs text-slate-400 font-medium">ยังไม่ได้สแกน/กรอกเลขพัสดุ</span>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* หน้าจอกล้องสแกนบาร์โค้ดสด (บังคับกล้องหลังมือถือเป็นหลัก + สลับเลนส์ได้) */}
-            <BarcodeCameraScanner
-              isOpen={isScannerOpen}
-              onClose={() => setIsScannerOpen(false)}
-              onDetected={handleBarcodeDetected}
-              onScanFromFile={handleScanBarcodeFromImage}
-              isScanningFile={isScanningFile}
-            />
-
-            {lastScannedCode && (
-              <div className="px-3.5 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between text-xs text-emerald-900">
-                <div className="flex items-center gap-2 font-semibold">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>
-                    สแกนบาร์โค้ดสำเร็จ: <strong className="font-mono">{lastScannedCode}</strong>
-                  </span>
-                </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {activeInboundStep === 1 ? (
+                <>
+                  <label className="min-h-[38px] px-3 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer">
+                    <ImageUp className="w-4 h-4 shrink-0" />
+                    <span>{isScanningFile ? 'กำลังอ่าน...' : 'ถ่ายรูป/เลือกรูปบาร์โค้ด'}</span>
+                    <input
+                      ref={barcodeFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={handleScanBarcodeFromImage}
+                      className="sr-only"
+                    />
+                  </label>
+                  {isTrackingValid && !isDuplicateTracking && (
+                    <button
+                      type="button"
+                      onClick={advanceFromStep1ToStep2}
+                      className="min-h-[38px] px-3 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                    >
+                      <span>ถัดไป: ข้อมูลนักเรียน</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </>
+              ) : (
                 <button
                   type="button"
-                  onClick={requestCameraPermissionAndOpenScanner}
-                  className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                  onClick={() => {
+                    setActiveInboundStep(1);
+                    setTimeout(() => {
+                      if (trackingInputMode === 'six_digits' && courier !== 'ผู้ปกครองฝากส่ง') {
+                        sixDigitsInputRef.current?.focus();
+                        sixDigitsInputRef.current?.select();
+                      } else {
+                        trackingInputRef.current?.focus();
+                      }
+                    }, 80);
+                  }}
+                  className="min-h-[34px] px-3 py-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
-                  สแกนซ้ำ
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>{trackingNumber.trim() ? 'แก้ไข / สแกนใหม่' : 'เปิดสแกน'}</span>
                 </button>
-              </div>
-            )}
+              )}
+            </div>
+          </div>
 
-            {/* ส่วนกรอกข้อมูล: สลับระหว่าง "กรอกเลขพัสดุ 6 ตัวสุดท้าย" กับ "ยิงบาร์โค้ด / เลขเต็ม" (กรณีผู้ปกครองฝากส่งจะใช้เลขพัสดุแบบเต็มเสมอ) */}
-            {trackingInputMode === 'six_digits' && courier !== 'ผู้ปกครองฝากส่ง' ? (
-              <div className="space-y-3 bg-amber-50/70 border-2 border-amber-300 rounded-2xl p-4 sm:p-5 animate-in fade-in duration-150">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-amber-200/80 pb-2.5">
-                  <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-lg bg-amber-600 text-white flex items-center justify-center font-bold text-xs">
-                      #6
+          {activeInboundStep === 1 && (
+            <div className="space-y-4 pt-1">
+              {/* หน้าจอกล้องสแกนบาร์โค้ดสด (บังคับกล้องหลังมือถือเป็นหลัก + สลับเลนส์ได้) */}
+              <BarcodeCameraScanner
+                isOpen={isScannerOpen}
+                onClose={() => setIsScannerOpen(false)}
+                onDetected={handleBarcodeDetected}
+                onScanFromFile={handleScanBarcodeFromImage}
+                isScanningFile={isScanningFile}
+              />
+
+              {lastScannedCode && (
+                <div className="px-3.5 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between text-xs text-emerald-900">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>
+                      สแกนบาร์โค้ดสำเร็จ: <strong className="font-mono">{lastScannedCode}</strong>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={requestCameraPermissionAndOpenScanner}
+                    className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                  >
+                    สแกนซ้ำ
+                  </button>
+                </div>
+              )}
+
+              {/* ส่วนกรอกข้อมูล: สลับระหว่าง "กรอกเลขพัสดุ 6 ตัวสุดท้าย" กับ "ยิงบาร์โค้ด / เลขเต็ม" (กรณีผู้ปกครองฝากส่งจะใช้เลขพัสดุแบบเต็มเสมอ) */}
+              {trackingInputMode === 'six_digits' && courier !== 'ผู้ปกครองฝากส่ง' ? (
+                <div className="space-y-3 bg-amber-50/70 border-2 border-amber-300 rounded-2xl p-4 sm:p-5 animate-in fade-in duration-150">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-amber-200/80 pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-amber-600 text-white flex items-center justify-center font-bold text-xs">
+                        #6
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-amber-950">
+                          กรอกเลขพัสดุ 6 ตัวสุดท้าย
+                        </h3>
+                        <p className="text-[11px] text-amber-800">
+                          ดูตัวเลข 6 ตัวท้ายจากฉลากกล่องพัสดุ แล้วพิมพ์ลงในช่องนี้
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="text-sm font-bold text-amber-950">
-                        กรอกเลขพัสดุ 6 ตัวสุดท้าย
-                      </h3>
-                      <p className="text-[11px] text-amber-800">
-                        ดูตัวเลข 6 ตัวท้ายจากฉลากกล่องพัสดุ แล้วพิมพ์ลงในช่องนี้
-                      </p>
-                    </div>
+
+                    {/* ตัวเลือกรหัสขนส่งนำหน้า */}
+                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-amber-950 cursor-pointer select-none bg-white/80 px-2.5 py-1.5 rounded-lg border border-amber-200 hover:bg-white transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={includeCourierPrefix}
+                        onChange={(e) => handleToggleCourierPrefix(e.target.checked)}
+                        className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-amber-300 cursor-pointer"
+                      />
+                      <span>ใส่รหัสขนส่งนำหน้า ({getCourierTrackingPrefix(courier)}-)</span>
+                    </label>
                   </div>
 
-                  {/* ตัวเลือกรหัสขนส่งนำหน้า */}
-                  <label className="inline-flex items-center gap-2 text-xs font-semibold text-amber-950 cursor-pointer select-none bg-white/80 px-2.5 py-1.5 rounded-lg border border-amber-200 hover:bg-white transition-colors">
-                    <input
-                      type="checkbox"
-                      checked={includeCourierPrefix}
-                      onChange={(e) => handleToggleCourierPrefix(e.target.checked)}
-                      className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-amber-300 cursor-pointer"
-                    />
-                    <span>ใส่รหัสขนส่งนำหน้า ({getCourierTrackingPrefix(courier)}-)</span>
-                  </label>
-                </div>
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <div className="flex items-center gap-2 flex-1">
+                      {/* แสดงรหัสคำนำหน้าขนส่ง เช่น TH-, KER-, ED- */}
+                      {includeCourierPrefix && (
+                        <div className="min-h-[52px] px-3.5 sm:px-4 bg-amber-100 border-2 border-amber-300 text-amber-950 rounded-xl font-mono font-black text-lg flex items-center justify-center shrink-0 shadow-2xs select-none">
+                          {getCourierTrackingPrefix(courier)}-
+                        </div>
+                      )}
 
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  <div className="flex items-center gap-2 flex-1">
-                    {/* แสดงรหัสคำนำหน้าขนส่ง เช่น TH-, KER-, ED- */}
-                    {includeCourierPrefix && (
-                      <div className="min-h-[52px] px-3.5 sm:px-4 bg-amber-100 border-2 border-amber-300 text-amber-950 rounded-xl font-mono font-black text-lg flex items-center justify-center shrink-0 shadow-2xs select-none">
-                        {getCourierTrackingPrefix(courier)}-
-                      </div>
-                    )}
-
-                    {/* ช่องกรอกเลข 6 ตัวท้ายขนาดใหญ่ ตัวพิมพ์ใหญ่อัตโนมัติ Monospace พร้อมตัวนับ (0/6) */}
-                    <div className="relative flex-1">
-                      <input
-                        ref={sixDigitsInputRef}
-                        id="six-digits-input"
-                        type="text"
-                        value={sixDigitsInput}
-                        onChange={(e) => handleSixDigitsChange(e.target.value)}
-                        onPaste={(e) => {
-                          const pasted = e.clipboardData.getData('text').trim();
-                          if (pasted.length > 6) {
-                            e.preventDefault();
-                            handleSwitchTrackingMode('full');
-                            handleTrackingChange(pasted);
-                            playScanBeep();
-                          }
-                        }}
-                        placeholder="เช่น 123456"
-                        className="w-full min-h-[52px] px-4 pr-20 py-3 text-lg font-mono font-black tracking-widest text-slate-900 bg-white border-2 border-amber-400 rounded-xl focus:border-amber-600 focus:ring-2 focus:ring-amber-400/40 focus:outline-none uppercase placeholder:text-slate-400 placeholder:font-normal placeholder:tracking-normal transition-all"
-                      />
-                      <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                        <button
-                          type="button"
-                          aria-label="สุ่มเลข 6 ตัวใหม่"
-                          title="กดเพื่อสุ่มเลข 6 ตัวใหม่ (ไม่ซ้ำในฐานข้อมูล)"
-                          onClick={handleGenerateRandomSixDigits}
-                          className="min-h-[32px] min-w-[32px] flex items-center justify-center text-amber-600 hover:text-amber-800 hover:bg-amber-100 rounded-lg cursor-pointer transition-colors"
-                        >
-                          <Dices className="w-4 h-4" />
-                        </button>
-                        {sixDigitsInput && (
+                      {/* ช่องกรอกเลข 6 ตัวท้ายขนาดใหญ่ ตัวพิมพ์ใหญ่อัตโนมัติ Monospace */}
+                      <div className="relative flex-1">
+                        <input
+                          ref={sixDigitsInputRef}
+                          id="six-digits-input"
+                          type="text"
+                          value={sixDigitsInput}
+                          onChange={(e) => handleSixDigitsChange(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              if (sixDigitsInput.trim()) {
+                                playScanBeep();
+                                const dup = checkAndNotifyDuplicate(trackingNumber);
+                                if (!dup) {
+                                  advanceFromStep1ToStep2();
+                                }
+                              }
+                            }
+                          }}
+                          onPaste={(e) => {
+                            const pasted = e.clipboardData.getData('text').trim();
+                            if (pasted.length > 6) {
+                              e.preventDefault();
+                              handleSwitchTrackingMode('full');
+                              handleTrackingChange(pasted);
+                              playScanBeep();
+                              const dup = checkAndNotifyDuplicate(pasted);
+                              if (!dup) {
+                                advanceFromStep1ToStep2();
+                              }
+                            }
+                          }}
+                          placeholder="เช่น 123456"
+                          className="w-full min-h-[52px] px-4 pr-20 py-3 text-lg font-mono font-black tracking-widest text-slate-900 bg-white border-2 border-amber-400 rounded-xl focus:border-amber-600 focus:ring-2 focus:ring-amber-400/40 focus:outline-none uppercase placeholder:text-slate-400 placeholder:font-normal placeholder:tracking-normal transition-all"
+                        />
+                        <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
                           <button
                             type="button"
-                            aria-label="ล้างเลข 6 ตัวท้าย"
-                            onClick={() => handleSixDigitsChange('')}
-                            className="min-h-[32px] min-w-[32px] flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors"
+                            aria-label="สุ่มเลข 6 ตัวใหม่"
+                            title="กดเพื่อสุ่มเลข 6 ตัวใหม่ (ไม่ซ้ำในฐานข้อมูล)"
+                            onClick={handleGenerateRandomSixDigits}
+                            className="min-h-[32px] min-w-[32px] flex items-center justify-center text-amber-600 hover:text-amber-800 hover:bg-amber-100 rounded-lg cursor-pointer transition-colors"
                           >
-                            <X className="w-4 h-4" />
+                            <Dices className="w-4 h-4" />
                           </button>
-                        )}
+                          {sixDigitsInput && (
+                            <button
+                              type="button"
+                              aria-label="ล้างเลข 6 ตัวท้าย"
+                              onClick={() => handleSixDigitsChange('')}
+                              className="min-h-[32px] min-w-[32px] flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* ปุ่มสลับโหมดและปุ่มสแกนโค้ด (ปุ่มสลับอยู่หน้าปุ่มสแกนโค้ดเท่านั้น) */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => handleSwitchTrackingMode('full')}
-                      title="สลับไปยิงบาร์โค้ด หรือกรอกเลขเต็ม"
-                      className="min-h-[52px] px-3.5 sm:px-4 py-3 bg-white hover:bg-slate-100 text-slate-800 border-2 border-amber-300 text-xs font-bold rounded-xl flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
-                    >
-                      <Barcode className="w-4 h-4 shrink-0 text-slate-700" />
-                      <span>ยิงบาร์โค้ด / เลขเต็ม</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleToggleScanner}
-                      title="กดปุ่มสแกนโค้ดเพื่อเปิดกล้อง (จะเปลี่ยนเป็นโหมดยิงบาร์โค้ด/เลขเต็มอัตโนมัติ)"
-                      className="min-h-[52px] px-5 py-3 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl flex items-center gap-2 cursor-pointer transition-colors shadow-2xs"
-                    >
-                      <Camera className="w-4 h-4 shrink-0" />
-                      <span>สแกนโค้ด</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="relative flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  <div className="relative flex-1">
-                    <input
-                      ref={trackingInputRef}
-                      id="tracking-number-input"
-                      type="text"
-                      value={trackingNumber}
-                      onChange={(e) => handleTrackingChange(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          const val = trackingNumber.trim();
-                          if (val) {
-                            playScanBeep();
-                            // สแกนโค้ดผ่านเครื่องยิง: หากเลขพัสดุซ้ำ ให้แสดง popup
-                            const dup = findDuplicateParcel(val);
-                            if (dup) {
-                              setDuplicateParcel(dup);
-                              setIsDuplicateModalOpen(true);
-                              return;
-                            }
-                            studentSearchInputRef.current?.focus();
-                          }
-                        }
-                      }}
-                      placeholder={
-                        courier === 'ผู้ปกครองฝากส่ง'
-                          ? 'เลขพัสดุผู้ปกครองฝากส่ง...'
-                          : 'ยิงบาร์โค้ดผ่านกล้อง / เครื่องสแกน หรือพิมพ์เลขพัสดุ...'
-                      }
-                      className={`w-full min-h-[52px] px-4 pr-10 py-3 text-base font-mono font-semibold rounded-xl border-2 focus:outline-none transition-colors ${
-                        courier === 'ผู้ปกครองฝากส่ง'
-                          ? 'text-indigo-950 bg-indigo-50/70 border-indigo-400 focus:bg-white focus:border-indigo-600'
-                          : 'text-slate-900 bg-slate-50 border-slate-300 focus:bg-white focus:border-slate-900'
-                      }`}
-                    />
-                    {trackingNumber && (
+                    {/* ปุ่มสลับโหมดและปุ่มสแกนโค้ด (ปุ่มสลับอยู่หน้าปุ่มสแกนโค้ดเท่านั้น) */}
+                    <div className="flex items-center gap-2 shrink-0">
                       <button
                         type="button"
-                        aria-label="ล้างเลขพัสดุ"
-                        onClick={() => {
-                          if (courier === 'ผู้ปกครองฝากส่ง') {
-                            const newAuto = generateUniqueParentTrackingNumber(parcels);
-                            setTrackingNumber(newAuto);
-                          } else {
-                            setTrackingNumber('');
-                            setLastScannedCode(null);
+                        onClick={() => handleSwitchTrackingMode('full')}
+                        title="สลับไปสแกนบาร์โค้ด หรือกรอกเลขเต็ม"
+                        className="min-h-[52px] px-3.5 sm:px-4 py-3 bg-white hover:bg-slate-100 text-slate-800 border-2 border-amber-300 text-xs font-bold rounded-xl flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
+                      >
+                        <Barcode className="w-4 h-4 shrink-0 text-slate-700" />
+                        <span>เลขเต็ม / สแกน</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleToggleScanner}
+                        title="กดปุ่มสแกนโค้ดเพื่อเปิดกล้อง (จะเปลี่ยนเป็นโหมดเลขเต็มอัตโนมัติ)"
+                        className="min-h-[52px] px-5 py-3 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl flex items-center gap-2 cursor-pointer transition-colors shadow-2xs"
+                      >
+                        <Camera className="w-4 h-4 shrink-0" />
+                        <span>สแกนโค้ด</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="relative flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        ref={trackingInputRef}
+                        id="tracking-number-input"
+                        type="text"
+                        value={trackingNumber}
+                        onChange={(e) => handleTrackingChange(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            const val = trackingNumber.trim();
+                            if (val) {
+                              playScanBeep();
+                              // สแกนโค้ดผ่านเครื่องยิง: หากเลขพัสดุซ้ำ ให้แสดง popup
+                              const dup = findDuplicateParcel(val);
+                              if (dup) {
+                                setDuplicateParcel(dup);
+                                setIsDuplicateModalOpen(true);
+                                return;
+                              }
+                              advanceFromStep1ToStep2();
+                            }
                           }
                         }}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 min-h-[36px] min-w-[36px] flex items-center justify-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                        placeholder={
+                          courier === 'ผู้ปกครองฝากส่ง'
+                            ? 'เลขพัสดุผู้ปกครองฝากส่ง...'
+                            : 'สแกนบาร์โค้ดผ่านกล้อง / เครื่องสแกน หรือพิมพ์เลขพัสดุ...'
+                        }
+                        className={`w-full min-h-[52px] px-4 pr-10 py-3 text-base font-mono font-semibold rounded-xl border-2 focus:outline-none transition-colors ${
+                          courier === 'ผู้ปกครองฝากส่ง'
+                            ? 'text-indigo-950 bg-indigo-50/70 border-indigo-400 focus:bg-white focus:border-indigo-600'
+                            : 'text-slate-900 bg-slate-50 border-slate-300 focus:bg-white focus:border-slate-900'
+                        }`}
+                      />
+                      {trackingNumber && (
+                        <button
+                          type="button"
+                          aria-label="ล้างเลขพัสดุ"
+                          onClick={() => {
+                            if (courier === 'ผู้ปกครองฝากส่ง') {
+                              const newAuto = generateUniqueParentTrackingNumber(parcels);
+                              setTrackingNumber(newAuto);
+                            } else {
+                              setTrackingNumber('');
+                              setLastScannedCode(null);
+                            }
+                          }}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 min-h-[36px] min-w-[36px] flex items-center justify-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* ปุ่มสลับโหมดและปุ่มสแกนโค้ด (ปุ่มสลับอยู่หน้าปุ่มสแกนโค้ดเท่านั้น) */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleSwitchTrackingMode('six_digits')}
+                        title="สลับไปกรอกเลขพัสดุ 6 ตัวท้าย"
+                        className="min-h-[52px] px-3.5 sm:px-4 py-3 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
                       >
-                        <X className="w-4 h-4" />
+                        <Hash className="w-4 h-4 shrink-0" />
+                        <span>กรอก 6 ตัวท้าย</span>
                       </button>
-                    )}
-                  </div>
 
-                  {/* ปุ่มสลับโหมดและปุ่มสแกนโค้ด (ปุ่มสลับอยู่หน้าปุ่มสแกนโค้ดเท่านั้น) */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => handleSwitchTrackingMode('six_digits')}
-                      title="สลับไปกรอกเลขพัสดุ 6 ตัวท้าย"
-                      className="min-h-[52px] px-3.5 sm:px-4 py-3 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
-                    >
-                      <Hash className="w-4 h-4 shrink-0" />
-                      <span>กรอก 6 ตัวท้าย</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleToggleScanner}
-                      title="เปิดกล้องเพื่อสแกนบาร์โค้ด"
-                      className="min-h-[52px] px-5 py-3 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl flex items-center gap-2 cursor-pointer transition-colors shadow-2xs"
-                    >
-                      <Camera className="w-4 h-4 shrink-0" />
-                      <span>สแกนโค้ด</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={handleToggleScanner}
+                        title="เปิดกล้องเพื่อสแกนบาร์โค้ด"
+                        className="min-h-[52px] px-5 py-3 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl flex items-center gap-2 cursor-pointer transition-colors shadow-2xs"
+                      >
+                        <Camera className="w-4 h-4 shrink-0" />
+                        <span>สแกนโค้ด</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* แสดงการแจ้งเตือนเมื่อเลขพัสดุซ้ำในฐานข้อมูล พร้อมปุ่มเปิดดูข้อมูล */}
-            {isDuplicateTracking && (
-              <div className="px-3.5 py-2.5 bg-red-50 border-2 border-red-300 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs text-red-900 animate-in fade-in duration-150 shadow-xs">
-                <div className="flex items-center gap-2 font-bold">
-                  <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 animate-pulse" />
-                  <span>เลขพัสดุนี้ได้ถูกใช้งานแล้วในระบบ</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => checkAndNotifyDuplicate(trackingNumber)}
-                  className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg cursor-pointer transition-colors shadow-2xs"
-                >
-                  ดูข้อมูลพัสดุที่ซ้ำ
-                </button>
-              </div>
-            )}
-
-            {/* ปุ่มเลือกบริษัทขนส่ง */}
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="block text-xs font-medium text-slate-500">
-                  บริษัทขนส่ง (เลือกบริษัทขนส่งได้ หรือตรวจจับอัตโนมัติจากเลขพัสดุ):
-                </span>
-                <span className="text-xs font-semibold text-slate-700">
-                  ขนส่งปัจจุบัน: <strong className="text-slate-900">{courier}</strong>
-                </span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {COURIER_LIST.map((c) => (
+              {/* แสดงการแจ้งเตือนเมื่อเลขพัสดุซ้ำในฐานข้อมูล พร้อมปุ่มเปิดดูข้อมูล */}
+              {isDuplicateTracking && (
+                <div className="px-3.5 py-2.5 bg-red-50 border-2 border-red-300 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs text-red-900 animate-in fade-in duration-150 shadow-xs">
+                  <div className="flex items-center gap-2 font-bold">
+                    <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 animate-pulse" />
+                    <span>เลขพัสดุนี้ได้ถูกใช้งานแล้วในระบบ</span>
+                  </div>
                   <button
-                    key={c}
                     type="button"
-                    onClick={() => handleSelectCourier(c)}
-                    className={`min-h-[40px] px-3.5 py-2 text-xs font-semibold rounded-xl border transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
-                      courier === c
-                        ? c === 'ผู้ปกครองฝากส่ง'
-                          ? 'bg-indigo-700 text-white border-indigo-700 shadow-sm font-bold ring-2 ring-indigo-500/30'
-                          : 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                        : c === 'ผู้ปกครองฝากส่ง'
-                        ? 'bg-indigo-50/70 text-indigo-900 border-indigo-200 hover:bg-indigo-100 font-medium'
-                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                    }`}
+                    onClick={() => checkAndNotifyDuplicate(trackingNumber)}
+                    className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg cursor-pointer transition-colors shadow-2xs"
                   >
-                    <span>{c}</span>
+                    ดูข้อมูลพัสดุที่ซ้ำ
                   </button>
-                ))}
+                </div>
+              )}
+
+              {/* ปุ่มเลือกบริษัทขนส่ง */}
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="block text-xs font-medium text-slate-500">
+                    บริษัทขนส่ง (เลือกบริษัทขนส่งได้ หรือตรวจจับอัตโนมัติจากเลขพัสดุ):
+                  </span>
+                  <span className="text-xs font-semibold text-slate-700">
+                    ขนส่งปัจจุบัน: <strong className="text-slate-900">{courier}</strong>
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {COURIER_LIST.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => handleSelectCourier(c)}
+                      className={`min-h-[40px] px-3.5 py-2 text-xs font-semibold rounded-xl border transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+                        courier === c
+                          ? c === 'ผู้ปกครองฝากส่ง'
+                            ? 'bg-indigo-700 text-white border-indigo-700 shadow-sm font-bold ring-2 ring-indigo-500/30'
+                            : 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                          : c === 'ผู้ปกครองฝากส่ง'
+                          ? 'bg-indigo-50/70 text-indigo-900 border-indigo-200 hover:bg-indigo-100 font-medium'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span>{c}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          </section>
+          )}
+        </section>
 
-          {/* กรอกข้อมูลนักเรียน และดึงข้อมูล */}
-          <section ref={step2SectionRef} data-section-id="step2" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <label
-                htmlFor="student-unified-search-input"
-                className="text-base font-bold text-slate-900 flex items-center gap-2"
-              >
-                <UserCheck className="w-5 h-5 text-slate-700" />
-                <span>กรอกข้อมูลนักเรียน และดึงข้อมูล</span>
-              </label>
+          {/* 2. กรอกข้อมูลนักเรียน และดึงข้อมูล */}
+          <section
+            ref={step2SectionRef}
+            data-section-id="step2"
+            className={`scroll-mt-28 bg-white border rounded-2xl transition-all ${
+              activeInboundStep === 2
+                ? 'border-slate-900/30 ring-2 ring-slate-900/10 p-5 md:p-6 space-y-4 shadow-xs'
+                : 'border-slate-200 p-4 sm:px-5 sm:py-4 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setActiveInboundStep((prev) => (prev === 2 ? null : 2))}
+                  className="text-base font-bold text-slate-900 flex items-center gap-2 cursor-pointer text-left"
+                >
+                  <span
+                    className={`w-6 h-6 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${
+                      isStudentValid && (studentFullName.trim() || matchedStudent)
+                        ? 'bg-emerald-600 text-white'
+                        : activeInboundStep === 2
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    {isStudentValid && (studentFullName.trim() || matchedStudent) && activeInboundStep !== 2 ? (
+                      <Check className="w-3.5 h-3.5" />
+                    ) : (
+                      '2'
+                    )}
+                  </span>
+                  <UserCheck className="w-5 h-5 text-slate-700 shrink-0" />
+                  <span>กรอกข้อมูลนักเรียน และดึงข้อมูล</span>
+                </button>
 
-              <div className="flex items-center gap-2">
-                {user && (
+                {activeInboundStep !== 2 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {studentFullName.trim() || matchedStudent ? (
+                      <>
+                        <span className="text-sm font-bold text-slate-900">
+                          {studentFullName.trim() ||
+                            `${matchedStudent?.prefix || ''}${matchedStudent?.firstName || ''} ${
+                              matchedStudent?.lastName || ''
+                            }`}
+                        </span>
+                        {activeDormitoryName && (
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-extrabold border shadow-2xs ${dormTheme.bgClass} ${dormTheme.borderClass}`}
+                            style={{ borderColor: dormTheme.hexColor, color: dormTheme.hexColor }}
+                          >
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: dormTheme.hexColor }}
+                            />
+                            <span>{activeDormitoryName}</span>
+                            {(studentDormRoom.trim() || matchedStudent?.dormRoom) && (
+                              <span className="font-mono text-[11px]">
+                                ห้อง {studentDormRoom.trim() || matchedStudent?.dormRoom}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                        {activeStudentParcelStats.isOverLimit && (
+                          <span className="px-2 py-0.5 rounded-md bg-red-100 text-red-800 border border-red-300 text-[11px] font-bold">
+                            เกินเกณฑ์
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-400 font-medium">ยังไม่ได้เลือกข้อมูลนักเรียน</span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {activeInboundStep === 2 ? (
+                  <>
+                    {user && (
+                      <button
+                        type="button"
+                        onClick={() => void refreshFromSupabase()}
+                        disabled={isSyncing}
+                        className="min-h-[36px] px-3 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                        <span>ซิงก์รายชื่อจาก Supabase</span>
+                      </button>
+                    )}
+                    {(studentFullName.trim() || matchedStudent) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (studentCodeInput.trim() || studentFullName.trim()) {
+                            applyAutoStatusForStudent(studentCodeInput, studentFullName, matchedStudent);
+                          }
+                          setActiveInboundStep(3);
+                        }}
+                        className="min-h-[36px] px-3 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                      >
+                        <span>ถัดไป: ประเภทสิ่งของ</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </>
+                ) : (
                   <button
                     type="button"
-                    onClick={() => void refreshFromSupabase()}
-                    disabled={isSyncing}
-                    className="min-h-[36px] px-3 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                    onClick={() => {
+                      setActiveInboundStep(2);
+                      setTimeout(() => studentSearchInputRef.current?.focus(), 80);
+                    }}
+                    className="min-h-[34px] px-3 py-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
                   >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                    <span>ซิงก์รายชื่อจาก Supabase</span>
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>{studentFullName.trim() || matchedStudent ? 'แก้ไข / เปลี่ยนนักเรียน' : 'เปิดกรอกข้อมูล'}</span>
                   </button>
                 )}
               </div>
             </div>
+
+            {activeInboundStep === 2 && (
+              <div className="space-y-4 pt-1">
 
             {/* แถบค้นหาข้อมูลนักเรียนรวม (รหัสนักเรียน, ชื่อ, นามสกุล, ชื่อเล่น หรือหอพัก) */}
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
@@ -2154,6 +2459,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                             lastAutoPopulatedCodeRef.current = exact.studentCode;
                             populateStudentFields(exact);
                             setIsStudentSelected(true);
+                            setActiveInboundStep(3);
                           }
                         }
                       }}
@@ -2216,6 +2522,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                             lastAutoPopulatedCodeRef.current = st.studentCode;
                             populateStudentFields(st);
                             setIsStudentSelected(true);
+                            setActiveInboundStep(3);
                           }}
                           className={`min-h-[38px] px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
                             isSelected
@@ -2653,196 +2960,394 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                       />
                     </div>
                   </div>
+
+                  <div className="pt-2 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!studentFullName.trim()) {
+                          setFormError('กรุณากรอกชื่อ-นามสกุลนักเรียนก่อนดำเนินการต่อ');
+                          return;
+                        }
+                        if (!studentDormitory.trim()) {
+                          setFormError('กรุณาระบุชื่อหอพักก่อนดำเนินการต่อ');
+                          return;
+                        }
+                        setFormError(null);
+                        applyAutoStatusForStudent(studentCodeInput, studentFullName, matchedStudent);
+                        setIsManualEditStudentOpen(false);
+                        setActiveInboundStep(3);
+                      }}
+                      className="min-h-[42px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      <span>ยืนยันข้อมูลนักเรียน / ถัดไป: กรอกประเภทสิ่งของ</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
+              </div>
+            )}
           </section>
 
-          {/* กรอกประเภทสิ่งของ */}
-          <section ref={step3SectionRef} data-section-id="step3" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-              <div>
-                <span className="block text-base font-bold text-slate-900 flex items-center gap-2">
-                  <Package className="w-5 h-5 text-slate-700" />
-                  <span>กรอกประเภทสิ่งของ</span>
-                </span>
-                <span className="block text-xs text-slate-500 mt-0.5">
-                  เลือกหมวดหมู่สิ่งของ (กรณีเลือก "เครื่องสำอาง" หรือ "อื่นๆ" สามารถระบุรายละเอียดว่าเป็นอะไรได้ด้านล่าง)
-                </span>
-              </div>
-              {!category && (
-                <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 self-start sm:self-auto">
-                  * กรุณาคลิกเลือกหมวดหมู่
-                </span>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-              {PARCEL_CATEGORIES.map((cat) => {
-                const active = category === cat;
-                return (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => {
-                      setCategory(cat);
-                      setFormError(null);
-                      setTimeout(() => customCategoryInputRef.current?.focus(), 50);
-                    }}
-                    className={`min-h-[52px] px-3.5 py-2.5 text-sm font-semibold rounded-xl border text-left transition-colors cursor-pointer ${
-                      active
-                        ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                        : 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
+          {/* 3. กรอกประเภทสิ่งของ */}
+          <section
+            ref={step3SectionRef}
+            data-section-id="step3"
+            className={`scroll-mt-28 bg-white border rounded-2xl transition-all ${
+              activeInboundStep === 3
+                ? 'border-slate-900/30 ring-2 ring-slate-900/10 p-5 md:p-6 space-y-4 shadow-xs'
+                : 'border-slate-200 p-4 sm:px-5 sm:py-4 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setActiveInboundStep((prev) => (prev === 3 ? null : 3))}
+                  className="text-base font-bold text-slate-900 flex items-center gap-2 cursor-pointer text-left"
+                >
+                  <span
+                    className={`w-6 h-6 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${
+                      isCategoryValid
+                        ? 'bg-emerald-600 text-white'
+                        : activeInboundStep === 3
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-200 text-slate-700'
                     }`}
                   >
-                    {cat}
+                    {isCategoryValid && activeInboundStep !== 3 ? (
+                      <Check className="w-3.5 h-3.5" />
+                    ) : (
+                      '3'
+                    )}
+                  </span>
+                  <Package className="w-5 h-5 text-slate-700 shrink-0" />
+                  <span>กรอกประเภทสิ่งของ</span>
+                </button>
+
+                {activeInboundStep !== 3 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {category ? (
+                      <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-900 border border-emerald-200">
+                        {customCategoryDetail.trim()
+                          ? `${category} (${customCategoryDetail.trim()})`
+                          : category}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-400 font-medium">ยังไม่ได้เลือกประเภทสิ่งของ</span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {activeInboundStep === 3 ? (
+                  !category ? (
+                    <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
+                      * กรุณาคลิกเลือกหมวดหมู่
+                    </span>
+                  ) : isCategoryValid ? (
+                    <button
+                      type="button"
+                      onClick={() => setActiveInboundStep(4)}
+                      className="min-h-[36px] px-3 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                    >
+                      <span>ถัดไป: เลือกสถานะคัดแยก</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  ) : null
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setActiveInboundStep(3)}
+                    className="min-h-[34px] px-3 py-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>{category ? 'แก้ไข / เปลี่ยนประเภท' : 'เปิดเลือกประเภท'}</span>
                   </button>
-                );
-              })}
+                )}
+              </div>
             </div>
 
-            {/* ช่องกรอกรายละเอียดประเภทสิ่งของ: disable ก่อนจนกว่าจะมีการเลือก เมื่อเลือกประเภทสิ่งของแล้ว ให้เปิดช่องกรอกประเภทสิ่งของทันที */}
-            {(() => {
-              const isDetailRequired = category === 'อื่นๆ';
-              const isCosmetics = category === 'เครื่องสำอาง';
-              const isInputDisabled = !category;
+            {activeInboundStep === 3 && (
+              <div className="space-y-3 pt-1">
+                <span className="block text-xs text-slate-500">
+                  เลือกหมวดหมู่สิ่งของ แล้วระบุรายละเอียดเพิ่มเติม (ถ้ามี) จากนั้นกดปุ่ม &quot;ถัดไป&quot; หรือกด Enter เพื่อย่อกล่องและเลือกสถานะคัดแยก
+                </span>
 
-              return (
-                <div
-                  className={`p-4 rounded-xl border space-y-2 transition-all ${
-                    !category
-                      ? 'bg-slate-100/70 border-slate-200 opacity-60'
-                      : isDetailRequired || isCosmetics
-                      ? 'bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/20'
-                      : 'bg-emerald-50/40 border-emerald-300 ring-2 ring-emerald-500/10'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <label
-                      htmlFor="custom-category-detail-input"
-                      className={`block text-xs font-bold ${
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5 sm:gap-2">
+                  {PARCEL_CATEGORIES.map((cat) => {
+                    const active = category === cat;
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        title={cat}
+                        onClick={() => {
+                          setCategory(cat);
+                          setFormError(null);
+                          setTimeout(() => customCategoryInputRef.current?.focus(), 60);
+                        }}
+                        className={`min-h-[38px] px-2.5 py-1.5 text-xs font-semibold rounded-lg border text-left transition-colors cursor-pointer truncate ${
+                          active
+                            ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                            : 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* ช่องกรอกรายละเอียดประเภทสิ่งของ: disable ก่อนจนกว่าจะมีการเลือก เมื่อเลือกประเภทสิ่งของแล้ว ให้เปิดช่องกรอกประเภทสิ่งของทันที */}
+                {(() => {
+                  const isDetailRequired = category === 'อื่นๆ';
+                  const isCosmetics = category === 'เครื่องสำอาง';
+                  const isInputDisabled = !category;
+
+                  return (
+                    <div
+                      className={`p-3 sm:p-3.5 rounded-xl border space-y-2 transition-all ${
                         !category
-                          ? 'text-slate-500'
-                          : isDetailRequired
-                          ? 'text-amber-950 font-extrabold'
-                          : isCosmetics
-                          ? 'text-amber-900 font-bold'
-                          : 'text-slate-900'
+                          ? 'bg-slate-100/70 border-slate-200 opacity-60'
+                          : isDetailRequired || isCosmetics
+                          ? 'bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/20'
+                          : 'bg-emerald-50/40 border-emerald-300 ring-2 ring-emerald-500/10'
                       }`}
                     >
-                      {!category
-                        ? 'กรอกประเภทสิ่งของ (ปิดใช้งาน - กรุณาคลิกเลือกหมวดหมู่สิ่งของด้านบนก่อน)'
-                        : isDetailRequired
-                        ? 'ระบุประเภทสิ่งของ (อื่นๆ ว่าเป็นอะไร) *'
-                        : isCosmetics
-                        ? 'ระบุรายละเอียดเครื่องสำอาง (ว่าเป็นอะไร เช่น ครีม, ลิปสติก)'
-                        : `กรอกประเภทสิ่งของ / ระบุรายละเอียดเพิ่มเติมสำหรับ "${category}" (ถ้ามี หรือเว้นว่างได้)`}
-                    </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <label
+                          htmlFor="custom-category-detail-input"
+                          className={`block text-xs font-bold ${
+                            !category
+                              ? 'text-slate-500'
+                              : isDetailRequired
+                              ? 'text-amber-950 font-extrabold'
+                              : isCosmetics
+                              ? 'text-amber-900 font-bold'
+                              : 'text-slate-900'
+                          }`}
+                        >
+                          {!category
+                            ? 'กรอกประเภทสิ่งของ (ปิดใช้งาน - กรุณาคลิกเลือกหมวดหมู่สิ่งของด้านบนก่อน)'
+                            : isDetailRequired
+                            ? 'ระบุประเภทสิ่งของ (อื่นๆ ว่าเป็นอะไร) *'
+                            : isCosmetics
+                            ? 'ระบุรายละเอียดเครื่องสำอาง (ว่าเป็นอะไร เช่น ครีม, ลิปสติก)'
+                            : `ระบุรายละเอียดเพิ่มเติมสำหรับ "${category}" (ถ้ามี หรือเว้นว่าง แล้วกดถัดไป)`}
+                        </label>
 
-                    {category && (
-                      <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md">
-                        เปิดช่องกรอกแล้ว
+                        {category && (
+                          <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md shrink-0">
+                            เปิดช่องกรอกแล้ว
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          ref={customCategoryInputRef}
+                          id="custom-category-detail-input"
+                          type="text"
+                          disabled={isInputDisabled}
+                          value={customCategoryDetail}
+                          onChange={(e) => {
+                            setCustomCategoryDetail(e.target.value);
+                            setFormError(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              if (isCategoryValid) {
+                                setActiveInboundStep(4);
+                              } else if (category === 'อื่นๆ') {
+                                setFormError('กรุณาระบุรายละเอียดประเภทสิ่งของในช่อง "อื่นๆ" ก่อนดำเนินการต่อ');
+                              }
+                            }
+                          }}
+                          placeholder={
+                            !category
+                              ? 'ปิดใช้งานชั่วคราว - กรุณาคลิกเลือกหมวดหมู่สิ่งของด้านบนก่อน...'
+                              : isDetailRequired
+                              ? 'กรอกว่าเป็นอะไร (จำเป็นต้องระบุ)...'
+                              : isCosmetics
+                              ? 'กรอกรายละเอียดเครื่องสำอางว่าเป็นอะไร (เช่น ครีม, ลิปสติก)...'
+                              : `กรอกรายละเอียดสิ่งของเพิ่มเติมสำหรับ "${category}" เช่น ขนมปัง, เสื้อกันหนาว (เว้นว่างได้)...`
+                          }
+                          className={`flex-1 min-h-[42px] px-3.5 py-2 text-xs sm:text-sm rounded-xl border transition-colors focus:outline-none ${
+                            isInputDisabled
+                              ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed select-none placeholder:text-slate-400'
+                              : isDetailRequired || isCosmetics
+                              ? 'bg-white text-slate-900 border-amber-300 focus:border-amber-600 focus:ring-2 focus:ring-amber-500/20'
+                              : 'bg-white text-slate-900 border-slate-300 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20'
+                          }`}
+                        />
+                        {category && (
+                          <button
+                            type="button"
+                            disabled={!isCategoryValid}
+                            onClick={() => setActiveInboundStep(4)}
+                            className="min-h-[42px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed shrink-0"
+                          >
+                            <span>ถัดไป: เลือกสถานะคัดแยก</span>
+                            <ArrowRight className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+          </section>
+
+          {/* 4. เลือกสถานะการคัดแยกพัสดุ */}
+          <section
+            ref={step4SectionRef}
+            data-section-id="step4"
+            className={`scroll-mt-28 bg-white border rounded-2xl transition-all ${
+              activeInboundStep === 4
+                ? 'border-slate-900/30 ring-2 ring-slate-900/10 p-5 md:p-6 space-y-4 shadow-xs'
+                : 'border-slate-200 p-4 sm:px-5 sm:py-4 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setActiveInboundStep((prev) => (prev === 4 ? null : 4))}
+                  className="text-base font-bold text-slate-900 flex items-center gap-2 cursor-pointer text-left"
+                >
+                  <span
+                    className={`w-6 h-6 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${
+                      isStatusValid
+                        ? 'bg-emerald-600 text-white'
+                        : activeInboundStep === 4
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    4
+                  </span>
+                  <Layers className="w-5 h-5 text-slate-700 shrink-0" />
+                  <span>เลือกสถานะการคัดแยกพัสดุ</span>
+                </button>
+
+                {activeInboundStep !== 4 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {status ? (
+                      <span
+                        className={`px-2.5 py-0.5 rounded-lg text-xs font-bold border ${
+                          status === 'ติดนิติการ'
+                            ? 'bg-red-50 text-red-800 border-red-200'
+                            : status === 'ติดต่องานพยาบาล'
+                            ? 'bg-amber-50 text-amber-900 border-amber-200'
+                            : status === 'พัสดุไม่ทราบเจ้าของ'
+                            ? 'bg-slate-100 text-slate-700 border-slate-200'
+                            : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        }`}
+                      >
+                        {status}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-400 font-medium">รอเลือกสถานะการคัดแยก</span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {activeInboundStep === 4 && status && (
+                  <div className="shrink-0">
+                    {status === 'ติดนิติการ' && activeStudentParcelStats.isOverLimit && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-red-100 text-red-800 border border-red-300 shadow-2xs">
+                        <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                        <span>เลือกอัตโนมัติ: พัสดุติดนิติการ (เกินเกณฑ์)</span>
+                      </span>
+                    )}
+                    {status === 'ลงทะเบียนรับพัสดุ' && (studentFullName.trim() || matchedStudent) && !activeStudentParcelStats.isOverLimit && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>เลือกอัตโนมัติ: ลงทะเบียนรับพัสดุ (อยู่ในเกณฑ์)</span>
+                      </span>
+                    )}
+                    {status === 'ติดต่องานพยาบาล' && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
+                        <span>ผู้ใช้เลือกเอง: ติดต่องานพยาบาล</span>
+                      </span>
+                    )}
+                    {status === 'พัสดุไม่ทราบเจ้าของ' && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-200 text-slate-800 border border-slate-300 shadow-2xs">
+                        <span>ผู้ใช้เลือกเอง: พัสดุไม่ทราบเจ้าของ</span>
                       </span>
                     )}
                   </div>
+                )}
 
-                  <input
-                    ref={customCategoryInputRef}
-                    id="custom-category-detail-input"
-                    type="text"
-                    disabled={isInputDisabled}
-                    value={customCategoryDetail}
-                    onChange={(e) => {
-                      setCustomCategoryDetail(e.target.value);
-                      setFormError(null);
-                    }}
-                    placeholder={
-                      !category
-                        ? 'ปิดใช้งานชั่วคราว - กรุณาคลิกเลือกหมวดหมู่สิ่งของด้านบนก่อน...'
-                        : isDetailRequired
-                        ? 'กรอกว่าเป็นอะไร (จำเป็นต้องระบุ)...'
-                        : isCosmetics
-                        ? 'กรอกรายละเอียดเครื่องสำอางว่าเป็นอะไร (เช่น ครีม, ลิปสติก)...'
-                        : `กรอกรายละเอียดสิ่งของเพิ่มเติมสำหรับ "${category}" เช่น ขนมปัง, เสื้อกันหนาว (เว้นว่างได้)...`
-                    }
-                    className={`w-full min-h-[46px] px-4 py-2.5 text-sm rounded-xl border transition-colors focus:outline-none ${
-                      isInputDisabled
-                        ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed select-none placeholder:text-slate-400'
-                        : isDetailRequired || isCosmetics
-                        ? 'bg-white text-slate-900 border-amber-300 focus:border-amber-600 focus:ring-2 focus:ring-amber-500/20'
-                        : 'bg-white text-slate-900 border-slate-300 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20'
-                    }`}
-                  />
-                </div>
-              );
-            })()}
-          </section>
-
-          {/* เลือกสถานะการคัดแยกพัสดุ */}
-          <section ref={step4SectionRef} data-section-id="step4" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <span className="block text-base font-bold text-slate-900 flex items-center gap-2">
-                  <Layers className="w-5 h-5 text-slate-700" />
-                  <span>เลือกสถานะการคัดแยกพัสดุ</span>
-                </span>
-                <span className="block text-xs text-slate-500 mt-0.5">
-                  เลือกสถานะ: พัสดุติดนิติการ (อัตโนมัติเมื่อสั่งเกินเกณฑ์) หรือ ลงทะเบียนรับพัสดุ (อัตโนมัติเมื่อไม่เกิน) · ติดต่องานพยาบาล และ พัสดุไม่ทราบเจ้าของ ให้ผู้ใช้เลือกเอง
-                </span>
-              </div>
-
-              {/* ป้ายแสดงสถานะการเลือกอัตโนมัติหรือผู้ใช้เลือกเอง */}
-              {status && (
-                <div className="shrink-0">
-                  {status === 'ติดนิติการ' && activeStudentParcelStats.isOverLimit && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-red-100 text-red-800 border border-red-300 shadow-2xs">
-                      <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
-                      <span>เลือกอัตโนมัติ: พัสดุติดนิติการ (เกินเกณฑ์)</span>
-                    </span>
-                  )}
-                  {status === 'ลงทะเบียนรับพัสดุ' && (studentFullName.trim() || matchedStudent) && !activeStudentParcelStats.isOverLimit && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      <span>เลือกอัตโนมัติ: ลงทะเบียนรับพัสดุ (อยู่ในเกณฑ์)</span>
-                    </span>
-                  )}
-                  {status === 'ติดต่องานพยาบาล' && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
-                      <span>ผู้ใช้เลือกเอง: ติดต่องานพยาบาล</span>
-                    </span>
-                  )}
-                  {status === 'พัสดุไม่ทราบเจ้าของ' && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-200 text-slate-800 border border-slate-300 shadow-2xs">
-                      <span>ผู้ใช้เลือกเอง: พัสดุไม่ทราบเจ้าของ</span>
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* ลดขนาดปุ่มสถานะ วาง 4 ปุ่มใน 1 แถวบนจอใหญ่ หรือ 1 แถว 2 ปุ่ม จำนวน 2 แถวบนจอมือถือ/แท็บเล็ต */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5">
-              {INBOUND_STATUS_OPTIONS.map((opt) => {
-                const active = status === opt.value;
-                return (
+                {activeInboundStep !== 4 && (
                   <button
-                    key={opt.value}
                     type="button"
-                    onClick={() => {
-                      setStatus(opt.value);
-                    }}
-                    className={`min-h-[48px] sm:min-h-[52px] px-2.5 py-2 sm:px-3 sm:py-2.5 rounded-xl border-2 text-left transition-all cursor-pointer flex flex-col justify-center ${
-                      active ? opt.activeClass : opt.inactiveClass
-                    }`}
+                    onClick={() => setActiveInboundStep(4)}
+                    className="min-h-[34px] px-3 py-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
                   >
-                    <div className="font-bold text-xs sm:text-sm leading-tight truncate">{opt.label}</div>
-                    <div className={`text-[10.5px] sm:text-[11px] mt-0.5 leading-tight truncate ${active ? opt.descActiveClass : opt.descInactiveClass}`}>
-                      {opt.desc}
-                    </div>
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>{status ? 'เปลี่ยน / บันทึก' : 'เปิดเลือกสถานะ'}</span>
                   </button>
-                );
-              })}
+                )}
+              </div>
             </div>
+
+            {activeInboundStep === 4 && (
+              <div className="space-y-4 pt-1">
+                <span className="block text-xs text-slate-500">
+                  คลิกเลือกประเภทการคัดแยกพัสดุเพื่อบันทึกและเตรียมพร้อมสแกนพัสดุชิ้นต่อไป (กรณีพัสดุติดนิติการสามารถเลือกสาเหตุเพิ่มเติมได้)
+                </span>
+
+                {/* ลดขนาดปุ่มสถานะ วาง 4 ปุ่มใน 1 แถวบนจอใหญ่ หรือ 1 แถว 2 ปุ่ม จำนวน 2 แถวบนจอมือถือ/แท็บเล็ต */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5">
+                  {INBOUND_STATUS_OPTIONS.map((opt) => {
+                    const active = status === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => {
+                          setStatus(opt.value);
+                          setFormError(null);
+                          if (opt.value !== 'ติดนิติการ') {
+                            const canQuickSave =
+                              isTrackingValid &&
+                              !isDuplicateTracking &&
+                              (opt.value === 'พัสดุไม่ทราบเจ้าของ' ||
+                                Boolean(
+                                  (studentFullName.trim() ||
+                                    (matchedStudent &&
+                                      `${matchedStudent.prefix || ''}${matchedStudent.firstName}`.trim())) &&
+                                    (studentCodeInput.trim() || matchedStudent?.studentCode) &&
+                                    (studentDormitory.trim() ||
+                                      (matchedStudent?.dormitory && matchedStudent.dormitory !== '-'))
+                                )) &&
+                              isCategoryValid;
+                            if (canQuickSave) {
+                              void submitInboundParcel(opt.value);
+                            }
+                          }
+                        }}
+                        className={`min-h-[48px] sm:min-h-[52px] px-2.5 py-2 sm:px-3 sm:py-2.5 rounded-xl border-2 text-left transition-all cursor-pointer flex flex-col justify-center ${
+                          active ? opt.activeClass : opt.inactiveClass
+                        }`}
+                      >
+                        <div className="font-bold text-xs sm:text-sm leading-tight truncate">{opt.label}</div>
+                        <div className={`text-[10.5px] sm:text-[11px] mt-0.5 leading-tight truncate ${active ? opt.descActiveClass : opt.descInactiveClass}`}>
+                          {opt.desc}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
 
             {/* แสดงช่องหมายเหตุเฉพาะเมื่อเลือกสถานะ "พัสดุติดนิติการ" ตามคำสั่งผู้ใช้ */}
             {status === 'ติดนิติการ' && (
@@ -3010,16 +3515,18 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                   </div>
                   <div className="flex flex-wrap gap-1.5 pt-0.5">
                     <span
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                         isTrackingValid && !isDuplicateTracking
                           ? 'bg-emerald-100 text-emerald-800 font-semibold'
                           : isDuplicateTracking
-                          ? 'bg-red-100 text-red-900 border border-red-300 font-semibold cursor-pointer'
-                          : 'bg-slate-200/80 text-slate-500'
+                          ? 'bg-red-100 text-red-900 border border-red-300 font-semibold'
+                          : 'bg-slate-200/80 text-slate-600 hover:bg-slate-200'
                       }`}
                       onClick={() => {
                         if (isDuplicateTracking) {
                           checkAndNotifyDuplicate(trackingNumber);
+                        } else {
+                          setActiveInboundStep(1);
                         }
                       }}
                     >
@@ -3029,38 +3536,40 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                       ) : isDuplicateTracking ? (
                         <span className="text-[10px] text-red-700 underline font-bold">(เลขซ้ำ - ดูข้อมูล)</span>
                       ) : (
-                        <span className="text-[10px] text-slate-400">(ยังไม่ได้ระบุ)</span>
+                        <span className="text-[10px] text-slate-500 underline">(คลิกกรอก)</span>
                       )}
                     </span>
 
                     <span
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                      onClick={() => setActiveInboundStep(2)}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                         isStudentValid
                           ? 'bg-emerald-100 text-emerald-800 font-semibold'
-                          : 'bg-slate-200/80 text-slate-500'
+                          : 'bg-slate-200/80 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
                       <span>2. ข้อมูลผู้รับ</span>
                       {isStudentValid ? (
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                       ) : (
-                        <span className="text-[10px] text-slate-400">(ยังไม่ได้ระบุ)</span>
+                        <span className="text-[10px] text-slate-500 underline">(คลิกกรอก)</span>
                       )}
                     </span>
 
                     <span
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                      onClick={() => setActiveInboundStep(3)}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                         isCategoryValid
                           ? 'bg-emerald-100 text-emerald-800 font-semibold'
-                          : 'bg-slate-200/80 text-slate-500'
+                          : 'bg-slate-200/80 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
                       <span>3. ประเภทสิ่งของ</span>
                       {isCategoryValid ? (
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                       ) : (
-                        <span className="text-[10px] text-slate-400">
-                          {!category ? '(ยังไม่ได้เลือก)' : '(ระบุรายละเอียด)'}
+                        <span className="text-[10px] text-slate-500 underline">
+                          {!category ? '(คลิกเลือก)' : '(ระบุรายละเอียด)'}
                         </span>
                       )}
                     </span>
@@ -3087,10 +3596,13 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                 </div>
               </div>
             )}
+              </div>
+            )}
           </section>
       </form>
 
-      {/* จุดคัดแยกลงตะกร้าหอพัก (Color-Coding Guide) */}
+      {/* จุดคัดแยกลงตะกร้าหอพัก (Color-Coding Guide) - แสดงเมื่อกดปุ่มเลือกดู */}
+      {isDormGuideOpen && (
       <section
         ref={dormGuideSectionRef}
         data-section-id="dorm"
@@ -3110,6 +3622,14 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
             <div className={`px-4 py-2 rounded-xl font-mono font-extrabold text-lg sm:text-xl ${dormTheme.accentBgClass} shadow-2xs`}>
               {dormTheme.basketCode}
             </div>
+            <button
+              type="button"
+              onClick={() => setIsDormGuideOpen(false)}
+              className="no-print min-h-[38px] px-3 py-1.5 bg-white/90 hover:bg-white text-slate-700 border border-black/15 rounded-xl text-xs font-bold transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>ซ่อน</span>
+            </button>
           </div>
         </div>
 
@@ -3236,8 +3756,10 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
           </div>
         )}
       </section>
+      )}
 
-      {/* รายการพัสดุที่รับเข้าล่าสุด */}
+      {/* รายการพัสดุที่รับเข้าล่าสุด - แสดงเมื่อกดปุ่มดูรายการพัสดุที่รับเข้าล่าสุด */}
+      {isRecentParcelsOpen && (
       <section ref={recentParcelsSectionRef} data-section-id="recent" className="scroll-mt-28 bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
@@ -3257,6 +3779,14 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                   <Barcode className="w-3.5 h-3.5 shrink-0" />
                   <span>กลับขึ้นไปสแกนโค้ด</span>
                   <ArrowUp className="w-3.5 h-3.5 shrink-0" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsRecentParcelsOpen(false)}
+                  className="no-print min-h-[34px] px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors flex items-center gap-1 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>ซ่อน</span>
                 </button>
               </div>
             </div>
@@ -3779,6 +4309,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
               </>
             )}
           </section>
+      )}
 
       {/* Modal เลือกวันที่รับพัสดุ */}
       <DeliveryDateModal
