@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { ParcelSystemProvider, useParcelSystem } from './context/ParcelSystemContext';
 import { SUPABASE_SQL_EDITOR_URL } from './services/supabase';
-import { Member, AppMenuKey, APP_MENU_DEFINITIONS } from './types/parcel';
+import { Member, AppMenuKey, ALL_MENU_KEYS, APP_MENU_DEFINITIONS } from './types/parcel';
 import { InboundView, InboundQuickAction } from './components/InboundView';
 import { TrackingView } from './components/TrackingView';
 import { ManifestView } from './components/ManifestView';
@@ -75,11 +75,31 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
     clearToast,
   } = useParcelSystem();
 
-  const [activeTab, setActiveTab] = useState<AppMenuKey>('inbound');
+  const [activeTab, setActiveTab] = useState<AppMenuKey>(() => {
+    if (typeof window === 'undefined') return 'inbound';
+    try {
+      const saved = window.sessionStorage.getItem('spms_active_tab_v1');
+      if (saved && ALL_MENU_KEYS.includes(saved as AppMenuKey)) {
+        return saved as AppMenuKey;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return 'inbound';
+  });
   const [inboundQuickAction, setInboundQuickAction] = useState<InboundQuickAction | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMobileSettingsOpen, setIsMobileSettingsOpen] = useState(false);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.sessionStorage.setItem('spms_active_tab_v1', activeTab);
+    } catch {
+      // ignore storage errors
+    }
+  }, [activeTab]);
 
   // ปิดเมนูตั้งค่าเมื่อคลิกข้างนอก
   useEffect(() => {
@@ -192,6 +212,29 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
               <span>ระบบลงทะเบียนพัสดุ</span>
             </div>
           </a>
+
+          {/* โปรไฟล์และปุ่มออกจากระบบสำหรับมือถือ / แท็บเล็ต */}
+          <div className="flex lg:hidden items-center gap-2">
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 text-xs font-semibold max-w-[180px] truncate">
+              {currentMember.role === 'ผู้ดูแลระบบ' ? (
+                <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+              ) : currentMember.role === 'ครู' ? (
+                <GraduationCap className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              ) : (
+                <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              )}
+              <span className="truncate">{currentMember.fullName || currentMember.role}</span>
+            </span>
+            <button
+              type="button"
+              onClick={logoutMember}
+              title="ออกจากระบบ"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-rose-50 hover:border-rose-200 text-slate-700 hover:text-rose-600 text-xs font-semibold transition-colors cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>ออกจากระบบ</span>
+            </button>
+          </div>
 
           {/* Desktop Nav Links - กรองเฉพาะเมนูที่ผู้ใช้ปัจจุบันได้รับอนุญาต */}
           <nav
@@ -1425,6 +1468,27 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ currentMember }) => {
                   <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/40 font-semibold">
                     Live DB
                   </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileSettingsOpen(false);
+                    logoutMember();
+                  }}
+                  className="w-full p-3 text-left rounded-xl flex items-center justify-between bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-7 h-7 rounded-lg bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                      <LogOut className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold">ออกจากระบบ</div>
+                      <div className="text-[10px] text-rose-500 font-normal">
+                        ลงชื่อออกจากบัญชี ({currentMember.fullName || currentMember.role})
+                      </div>
+                    </div>
+                  </div>
                 </button>
               </div>
             </div>

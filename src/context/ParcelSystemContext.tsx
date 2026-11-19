@@ -204,6 +204,60 @@ const AUTO_BOUND_USER = {
   isAnonymous: false,
 } as unknown as User;
 
+const LOGIN_SESSION_STORAGE_KEY = 'spms_login_session_v1';
+const ACTIVE_TAB_SESSION_STORAGE_KEY = 'spms_active_tab_v1';
+
+interface StoredLoginSession {
+  memberId: string;
+  memberSnapshot?: Omit<Member, 'password'>;
+  loggedInAt: string;
+}
+
+function readStoredLoginSession(): StoredLoginSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(LOGIN_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredLoginSession>;
+    if (!parsed || typeof parsed.memberId !== 'string' || !parsed.memberId.trim()) {
+      return null;
+    }
+    return {
+      memberId: parsed.memberId.trim(),
+      memberSnapshot: parsed.memberSnapshot,
+      loggedInAt:
+        typeof parsed.loggedInAt === 'string' ? parsed.loggedInAt : new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredLoginSession(member: Member): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const { password: _omittedPassword, ...safeSnapshot } = member;
+    const payload: StoredLoginSession = {
+      memberId: member.memberId,
+      memberSnapshot: safeSnapshot,
+      loggedInAt: new Date().toISOString(),
+    };
+    window.sessionStorage.setItem(LOGIN_SESSION_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function clearStoredLoginSession(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(LOGIN_SESSION_STORAGE_KEY);
+    window.sessionStorage.removeItem(ACTIVE_TAB_SESSION_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [firebaseAuthUser, setFirebaseAuthUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(true);
@@ -220,8 +274,17 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
     DEFAULT_PARCEL_RATE_LIMIT_CONFIG
   );
 
-  // รหัสสมาชิกปัจจุบันสำหรับการล็อกอิน (เก็บใน State ของหน้าเว็บเท่านั้น ไม่เก็บลง localStorage)
-  const [currentMemberId, setCurrentMemberId] = useState<string | null>(null);
+  // จดจำสถานะการล็อกอินไว้ใน sessionStorage (คงอยู่เมื่อรีเฟรชหน้า และล้างอัตโนมัติเมื่อออกจากระบบหรือปิดหน้าเว็บเบราว์เซอร์)
+  const [initialSession] = useState<StoredLoginSession | null>(() => readStoredLoginSession());
+  const [currentMemberId, setCurrentMemberId] = useState<string | null>(
+    () => initialSession?.memberId ?? null
+  );
+  const [sessionMemberSnapshot, setSessionMemberSnapshot] = useState<Member | null>(() =>
+    initialSession?.memberSnapshot
+      ? { ...initialSession.memberSnapshot, password: '' }
+      : null
+  );
+  const [hasLoadedCloudMembers, setHasLoadedCloudMembers] = useState<boolean>(false);
 
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [supabaseSchemaMissing, setSupabaseSchemaMissing] = useState<boolean>(false);
@@ -532,6 +595,7 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       setStudents(sortedStudents);
       setParcels(sortedParcels);
       setMembers(loadedMembers);
+      setHasLoadedCloudMembers(true);
       setRolePermissions(loadedRoles);
       setParcelRateLimitConfig(loadedRateConfig);
 
@@ -1723,6 +1787,8 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
         setMembers(nextMembers);
         if (currentMemberId === memberId) {
           setCurrentMemberId(null);
+          setSessionMemberSnapshot(null);
+          clearStoredLoginSession();
         }
         showToast(`ลบสมาชิก "${target.fullName}" ออกจาก Supabase โดยตรงแล้ว`, 'info');
       } else {
@@ -1824,9 +1890,37 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const currentMember = useMemo<Member | null>(() => {
     if (!currentMemberId) return null;
     const found = members.find((m) => m.memberId === currentMemberId);
-    if (!found || !found.active) return null;
-    return found;
-  }, [currentMemberId, members]);
+    if (found) {
+      return found.active ? found : null;
+    }
+    if (
+      !hasLoadedCloudMembers &&
+      sessionMemberSnapshot &&
+      sessionMemberSnapshot.memberId === currentMemberId
+    ) {
+      return sessionMemberSnapshot.active ? sessionMemberSnapshot : null;
+    }
+    return null;
+  }, [currentMemberId, members, hasLoadedCloudMembers, sessionMemberSnapshot]);
+
+  // ซิงก์ข้อมูลสมาชิกที่ล็อกอินกับ sessionStorage และตรวจสอบสถานะล่าสุดหลังโหลดจากฐานข้อมูล
+  useEffect(() => {
+    if (!currentMemberId) return;
+    const found = members.find((m) => m.memberId === currentMemberId);
+    if (found) {
+      if (!found.active) {
+        setCurrentMemberId(null);
+        setSessionMemberSnapshot(null);
+        clearStoredLoginSession();
+      } else {
+        writeStoredLoginSession(found);
+      }
+    } else if (hasLoadedCloudMembers) {
+      setCurrentMemberId(null);
+      setSessionMemberSnapshot(null);
+      clearStoredLoginSession();
+    }
+  }, [currentMemberId, members, hasLoadedCloudMembers]);
 
   const allowedMenusForCurrentMember = useMemo<AppMenuKey[]>(() => {
     if (!currentMember) return [];
@@ -1880,6 +1974,8 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
 
       setCurrentMemberId(matched.memberId);
+      setSessionMemberSnapshot({ ...matched, password: '' });
+      writeStoredLoginSession(matched);
       showToast(`เข้าสู่ระบบสำเร็จ: ${matched.fullName} (${matched.role})`, 'success');
       return { success: true, message: 'เข้าสู่ระบบสำเร็จ' };
     },
@@ -1904,6 +2000,8 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
           return { success: false, message: 'บัญชีนี้ถูกปิดการใช้งาน' };
         }
         setCurrentMemberId(matched.memberId);
+        setSessionMemberSnapshot({ ...matched, password: '' });
+        writeStoredLoginSession(matched);
         showToast(`เข้าสู่ระบบด้วย Google สำเร็จ: ${matched.fullName} (${matched.role})`, 'success');
         return { success: true, message: 'เข้าสู่ระบบสำเร็จ' };
       }
@@ -1911,6 +2009,8 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
       const fallbackAdmin = members.find((m) => m.role === 'ผู้ดูแลระบบ' && m.active) || members[0];
       if (fallbackAdmin) {
         setCurrentMemberId(fallbackAdmin.memberId);
+        setSessionMemberSnapshot({ ...fallbackAdmin, password: '' });
+        writeStoredLoginSession(fallbackAdmin);
         showToast(
           `เข้าสู่ระบบสำเร็จภายใต้ ${loggedInUser.email || AUTO_CLOUD_EMAIL} (${fallbackAdmin.role})`,
           'success'
@@ -1926,6 +2026,9 @@ export const ParcelSystemProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const logoutMember = useCallback(() => {
     setCurrentMemberId(null);
+    setSessionMemberSnapshot(null);
+    clearStoredLoginSession();
+    void signOutFirebaseUser().catch(() => {});
     showToast('ออกจากระบบเรียบร้อยแล้ว', 'info');
   }, [showToast]);
 

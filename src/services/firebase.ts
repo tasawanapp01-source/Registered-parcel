@@ -5,6 +5,8 @@ import {
   signInWithPopup,
   signOut,
   onAuthStateChanged,
+  setPersistence,
+  browserSessionPersistence,
   User,
 } from 'firebase/auth';
 import {
@@ -62,6 +64,9 @@ export const AUTO_CLOUD_OWNER_ID = 'tasawan_app01_pcccr_ac_th';
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+void setPersistence(auth, browserSessionPersistence).catch((err) => {
+  console.warn('Unable to configure Firebase session persistence:', err);
+});
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   login_hint: AUTO_CLOUD_EMAIL,
@@ -1516,6 +1521,7 @@ export async function findParcelInFirestoreFallback(
 }
 
 export async function signInWithGooglePopup(): Promise<User> {
+  await setPersistence(auth, browserSessionPersistence);
   const result = await signInWithPopup(auth, googleProvider);
   return result.user;
 }
