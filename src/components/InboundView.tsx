@@ -4102,7 +4102,7 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                     return (
                       <div
                         key={p.id}
-                        className={`rounded-xl transition-all flex flex-col gap-2 ${
+                        className={`rounded-xl transition-all flex flex-col gap-2.5 ${
                           isLegalHold
                             ? 'bg-red-50/90 border-2 border-red-300 p-3.5 my-2 shadow-xs'
                             : isMedicalHold
@@ -4110,151 +4110,158 @@ export const InboundView: React.FC<InboundViewProps> = ({ quickAction }) => {
                             : 'py-3.5 px-2 first:pt-1 last:pb-1 hover:bg-slate-50/80'
                         }`}
                       >
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span
-                                className="w-3 h-3 rounded-sm shrink-0"
-                                style={{ backgroundColor: pTheme.hexColor }}
-                              />
-                              <span
-                                style={isRedHighlightTrackingNumber(p.trackingNumber, p) ? { color: '#DC2626' } : undefined}
-                                className={`font-mono font-bold text-sm tabular-nums ${
-                                  isRedHighlightTrackingNumber(p.trackingNumber, p)
-                                    ? 'text-red-600 font-extrabold'
-                                    : 'text-slate-900'
-                                }`}
-                              >
-                                {p.trackingNumber}
-                              </span>
-                              <span className="text-slate-300">·</span>
-                              <span className="text-xs font-semibold text-slate-700">
-                                {pTheme.basketCode} ({p.dormitory} ห้อง {p.dormRoom})
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs">
-                              <span className="inline-flex items-center gap-1 font-semibold text-slate-800 bg-slate-100 px-2 py-0.5 rounded text-[11px]">
-                                <Calendar className="w-3 h-3 text-slate-500 shrink-0" />
-                                <span>รับเข้า: {formatThaiSlashDate(p.receivedDate || extractParcelLocalYMD(p))}</span>
-                                {p.createdAt && (
-                                  <span className="text-slate-500 font-mono text-[10.5px]">
-                                    ({new Date(p.createdAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.)
-                                  </span>
-                                )}
-                              </span>
-                              <span className="text-slate-300">·</span>
-                              <span className="text-xs text-slate-600 font-medium">ขนส่ง: {p.courier || '-'}</span>
-                              {p.recordedByName && (
-                                <>
-                                  <span className="text-slate-300">·</span>
-                                  <span className="text-[11px] font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
-                                    ผู้รับเข้า: {p.recordedByName}
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                            <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-1.5">
-                              <span className="font-semibold text-slate-800">{p.studentFullName}</span>
-                              <span className="text-slate-300">·</span>
-                              <span className="font-mono">รหัส {formatStudentCode(p.studentCode)}</span>
-                              <span className="text-slate-300">·</span>
-                              <span className="font-medium text-slate-800">{p.category}</span>
-                              <span className="text-slate-300">·</span>
-                              {isLegalHold ? (
-                                <span className="font-bold text-xs text-white bg-red-600 px-2 py-0.5 rounded shadow-xs inline-flex items-center gap-1">
-                                  <span>พัสดุติดนิติการ{p.note && p.note.trim() && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' ? `: ${p.note.trim()}` : ''}</span>
-                                </span>
-                              ) : isMedicalHold ? (
-                                <span className="font-bold text-xs text-slate-950 bg-amber-400 px-2 py-0.5 rounded shadow-xs inline-flex items-center gap-1">
-                                  <span>ติดต่องานพยาบาล</span>
-                                </span>
-                              ) : p.status === 'พัสดุไม่ทราบเจ้าของ' ? (
-                                <span className="font-bold text-slate-600">
-                                  สถานะ: {p.status}
-                                </span>
-                              ) : (
-                                <span className="font-bold text-emerald-700">
-                                  สถานะ: {p.status}
+                        <div className="w-full min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className="w-3 h-3 rounded-sm shrink-0"
+                              style={{ backgroundColor: pTheme.hexColor }}
+                            />
+                            <span
+                              style={isRedHighlightTrackingNumber(p.trackingNumber, p) ? { color: '#DC2626' } : undefined}
+                              className={`font-mono font-bold text-sm tabular-nums ${
+                                isRedHighlightTrackingNumber(p.trackingNumber, p)
+                                  ? 'text-red-600 font-extrabold'
+                                  : 'text-slate-900'
+                              }`}
+                            >
+                              {p.trackingNumber}
+                            </span>
+                            <span className="text-slate-300">·</span>
+                            <span className="text-xs font-semibold text-slate-700">
+                              {pTheme.basketCode} ({p.dormitory} ห้อง {p.dormRoom})
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs">
+                            <span className="inline-flex items-center gap-1 font-semibold text-slate-800 bg-slate-100 px-2 py-0.5 rounded text-[11px]">
+                              <Calendar className="w-3 h-3 text-slate-500 shrink-0" />
+                              <span>รับเข้า: {formatThaiSlashDate(p.receivedDate || extractParcelLocalYMD(p))}</span>
+                              {p.createdAt && (
+                                <span className="text-slate-500 font-mono text-[10.5px]">
+                                  ({new Date(p.createdAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.)
                                 </span>
                               )}
-                            </div>
-                            {p.note && p.note.trim() && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' && isLegalHold && (
-                              <div className="text-xs font-semibold px-2.5 py-1 rounded-lg mt-1 border bg-red-100/90 text-red-950 border-red-200">
-                                สาเหตุติดนิติการ: {p.note.trim()}
-                              </div>
-                            )}
-                            {p.note && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' && p.note !== 'ส่งต่องานพยาบาล' && isMedicalHold && (
-                              <div className="text-xs font-medium px-2.5 py-1 rounded-lg mt-1 border bg-amber-100/90 text-amber-950 border-amber-200">
-                                หมายเหตุ: {p.note}
-                              </div>
-                            )}
-                            {pStats && (
-                              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 mt-1 font-mono tabular-nums">
-                                <span>
-                                  จำนวนพัสดุ: วัน <strong>{pStats.dayCount}</strong> · สัปดาห์{' '}
-                                  <strong
-                                    className={
-                                      pStats.isOverWeeklyLimit ? 'text-red-600' : 'text-slate-900'
-                                    }
-                                  >
-                                    {pStats.weekCount}
-                                  </strong>{' '}
-                                  · เดือน <strong>{pStats.monthCount}</strong> ชิ้น
+                            </span>
+                            <span className="text-slate-300">·</span>
+                            <span className="text-xs text-slate-600 font-medium">ขนส่ง: {p.courier || '-'}</span>
+                            {p.recordedByName && (
+                              <>
+                                <span className="text-slate-300">·</span>
+                                <span className="text-[11px] font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
+                                  ผู้รับเข้า: {p.recordedByName}
                                 </span>
-                                {pStats.isOverWeeklyLimit && (
-                                  <button
-                                    type="button"
-                                    onClick={() => openWeeklyWarningPopup(pStats, 'manual')}
-                                    className="font-sans px-2 py-0.5 bg-red-100 hover:bg-red-200 text-red-800 font-bold rounded-md cursor-pointer"
-                                  >
-                                    เกิน 3 ชิ้น/สัปดาห์
-                                  </button>
-                                )}
-                              </div>
+                              </>
                             )}
                           </div>
-
-                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5 shrink-0">
-                            {(() => {
-                              const isReceivedToday = extractParcelLocalYMD(p) === todayIsoStr || p.receivedDate === todayIsoStr;
-                              const isStaffOrAdmin =
-                                currentMember?.role === 'ผู้ดูแลระบบ' ||
-                                currentMember?.role === 'เจ้าหน้าที่';
-                              const canEditThisParcel = isStaffOrAdmin || isReceivedToday;
-
-                              return (
+                          <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-1.5">
+                            <span className="font-semibold text-slate-800">{p.studentFullName}</span>
+                            <span className="text-slate-300">·</span>
+                            <span className="font-mono">รหัส {formatStudentCode(p.studentCode)}</span>
+                            <span className="text-slate-300">·</span>
+                            <span className="font-medium text-slate-800">{p.category}</span>
+                            <span className="text-slate-300">·</span>
+                            {isLegalHold ? (
+                              <span className="font-bold text-xs text-white bg-red-600 px-2 py-0.5 rounded shadow-xs inline-flex items-center gap-1">
+                                <span>พัสดุติดนิติการ{p.note && p.note.trim() && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' ? `: ${p.note.trim()}` : ''}</span>
+                              </span>
+                            ) : isMedicalHold ? (
+                              <span className="font-bold text-xs text-slate-950 bg-amber-400 px-2 py-0.5 rounded shadow-xs inline-flex items-center gap-1">
+                                <span>ติดต่องานพยาบาล</span>
+                              </span>
+                            ) : p.status === 'พัสดุไม่ทราบเจ้าของ' ? (
+                              <span className="font-bold text-slate-600">
+                                สถานะ: {p.status}
+                              </span>
+                            ) : (
+                              <span className="font-bold text-emerald-700">
+                                สถานะ: {p.status}
+                              </span>
+                            )}
+                          </div>
+                          {p.note && p.note.trim() && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' && isLegalHold && (
+                            <div className="text-xs font-semibold px-2.5 py-1 rounded-lg mt-1 border bg-red-100/90 text-red-950 border-red-200">
+                              สาเหตุติดนิติการ: {p.note.trim()}
+                            </div>
+                          )}
+                          {p.note && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' && p.note !== 'ส่งต่องานพยาบาล' && isMedicalHold && (
+                            <div className="text-xs font-medium px-2.5 py-1 rounded-lg mt-1 border bg-amber-100/90 text-amber-950 border-amber-200">
+                              หมายเหตุ: {p.note}
+                            </div>
+                          )}
+                          {pStats && (
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 mt-1 font-mono tabular-nums">
+                              <span>
+                                จำนวนพัสดุ: วัน <strong>{pStats.dayCount}</strong> · สัปดาห์{' '}
+                                <strong
+                                  className={
+                                    pStats.isOverWeeklyLimit ? 'text-red-600' : 'text-slate-900'
+                                  }
+                                >
+                                  {pStats.weekCount}
+                                </strong>{' '}
+                                · เดือน <strong>{pStats.monthCount}</strong> ชิ้น
+                              </span>
+                              {pStats.isOverWeeklyLimit && (
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenEditModal(p)}
-                                  disabled={!canEditThisParcel}
-                                  title={
-                                    canEditThisParcel
-                                      ? 'แก้ไขการรับพัสดุ (แก้ไขข้อมูลผู้รับพัสดุ, สถานะพัสดุ)'
-                                      : 'แก้ไขได้เฉพาะพัสดุที่รับเข้าเฉพาะวันนี้เท่านั้น (เจ้าหน้าที่/ผู้ดูแล แก้ไขได้ตลอด)'
-                                  }
-                                  className={`min-h-[38px] px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
-                                    canEditThisParcel
-                                      ? 'bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-800 border border-blue-200 cursor-pointer shadow-2xs'
-                                      : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-60'
-                                  }`}
+                                  onClick={() => openWeeklyWarningPopup(pStats, 'manual')}
+                                  className="font-sans px-2 py-0.5 bg-red-100 hover:bg-red-200 text-red-800 font-bold rounded-md cursor-pointer"
                                 >
-                                  <Edit3 className="w-3.5 h-3.5" />
-                                  <span>แก้ไขการรับพัสดุ</span>
+                                  เกิน 3 ชิ้น/สัปดาห์
                                 </button>
-                              );
-                            })()}
+                              )}
+                            </div>
+                          )}
+                        </div>
 
-                            {p.status !== 'ส่งมอบสำเร็จ' && (
+                        <div
+                          className={`w-full flex items-center justify-end gap-2 pt-2 border-t ${
+                            isLegalHold
+                              ? 'border-red-200/80'
+                              : isMedicalHold
+                              ? 'border-amber-200/80'
+                              : 'border-slate-100'
+                          }`}
+                        >
+                          {(() => {
+                            const isReceivedToday = extractParcelLocalYMD(p) === todayIsoStr || p.receivedDate === todayIsoStr;
+                            const isStaffOrAdmin =
+                              currentMember?.role === 'ผู้ดูแลระบบ' ||
+                              currentMember?.role === 'เจ้าหน้าที่';
+                            const canEditThisParcel = isStaffOrAdmin || isReceivedToday;
+
+                            return (
                               <button
                                 type="button"
-                                onClick={() => handleOpenDeliveryModal(p)}
-                                className="min-h-[38px] px-3 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-900 hover:text-white text-slate-800 rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                                onClick={() => handleOpenEditModal(p)}
+                                disabled={!canEditThisParcel}
+                                aria-label="แก้ไขการรับพัสดุ"
+                                title={
+                                  canEditThisParcel
+                                    ? 'แก้ไขการรับพัสดุ (แก้ไขข้อมูลผู้รับพัสดุ, สถานะพัสดุ)'
+                                    : 'แก้ไขได้เฉพาะพัสดุที่รับเข้าเฉพาะวันนี้เท่านั้น (เจ้าหน้าที่/ผู้ดูแล แก้ไขได้ตลอด)'
+                                }
+                                className={`w-10 h-10 rounded-xl transition-colors flex items-center justify-center shrink-0 ${
+                                  canEditThisParcel
+                                    ? 'bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-700 border border-blue-200 cursor-pointer shadow-2xs'
+                                    : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-60'
+                                }`}
                               >
-                                <span>เซ็นรับสำเร็จ</span>
-                                <ArrowRight className="w-3.5 h-3.5" />
+                                <Edit3 className="w-4 h-4" />
                               </button>
-                            )}
-                          </div>
+                            );
+                          })()}
+
+                          {p.status !== 'ส่งมอบสำเร็จ' && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenDeliveryModal(p)}
+                              aria-label="เซ็นรับสำเร็จ"
+                              title="เซ็นรับสำเร็จ"
+                              className="w-10 h-10 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl transition-colors flex items-center justify-center shrink-0 cursor-pointer shadow-xs"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     );

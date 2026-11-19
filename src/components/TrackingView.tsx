@@ -13,10 +13,12 @@ import {
   Calendar,
   CheckSquare,
   Square,
+  Edit3,
 } from 'lucide-react';
 import { useParcelSystem } from '../context/ParcelSystemContext';
 import { BarcodeCameraScanner, decodeBarcodeFromImageFile } from './BarcodeCameraScanner';
 import { DeliveryDateModal } from './DeliveryDateModal';
+import { EditInboundParcelModal } from './EditInboundParcelModal';
 import {
   Parcel,
   PARCEL_STATUSES,
@@ -27,6 +29,8 @@ import {
   WEEKLY_PARCEL_WARNING_LIMIT,
   formatStudentCode,
   isRedHighlightTrackingNumber,
+  getRelativeDateString,
+  extractParcelLocalYMD,
 } from '../types/parcel';
 
 export const TrackingView: React.FC = () => {
@@ -43,6 +47,7 @@ export const TrackingView: React.FC = () => {
     openWeeklyWarningPopup,
     parcelRateLimitConfig,
     quotaMetrics,
+    currentMember,
     canCurrentMemberEdit,
     canCurrentMemberDelete,
   } = useParcelSystem();
@@ -62,6 +67,11 @@ export const TrackingView: React.FC = () => {
   // สถานะ Modal สำหรับเลือกวันที่รับพัสดุเมื่อกดส่งมอบสำเร็จ
   const [deliveryModalParcel, setDeliveryModalParcel] = useState<Parcel | null>(null);
   const [isDeliveryModalOpen, setIsDeliveryModalOpen] = useState<boolean>(false);
+
+  // สถานะ Modal สำหรับแก้ไขการรับพัสดุ (แก้ไขข้อมูลผู้รับพัสดุ, สถานะพัสดุ)
+  const [editingParcel, setEditingParcel] = useState<Parcel | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState<boolean>(false);
+  const todayIsoStr = useMemo(() => getRelativeDateString(0), []);
 
   // สถานะการเลือกพัสดุหลายรายการ (Multi-Select) เพื่อส่งมอบพร้อมกัน
   const [selectedParcelIds, setSelectedParcelIds] = useState<string[]>([]);
@@ -178,6 +188,12 @@ export const TrackingView: React.FC = () => {
     }
     return counts;
   }, [parcels]);
+
+  // การจัดการเปิด Modal แก้ไขการรับพัสดุ
+  const handleOpenEditModal = (parcel: Parcel) => {
+    setEditingParcel(parcel);
+    setIsEditModalOpen(true);
+  };
 
   // การจัดการเปิด Modal ส่งมอบสำเร็จ
   const handleOpenDeliveryModal = (parcel: Parcel) => {
@@ -482,7 +498,7 @@ export const TrackingView: React.FC = () => {
               )}
             </span>
           </div>
-          <span>กดปุ่ม "ส่งมอบสำเร็จ" เพื่อเลือกวันที่รับพัสดุ (วันนี้, เมื่อวาน, หรือระบุวันที่)</span>
+          <span>กดปุ่ม "เซ็นรับสำเร็จ" เพื่อเลือกวันที่รับพัสดุ (วันนี้, เมื่อวาน, หรือระบุวันที่)</span>
         </div>
 
         {!searchKeyword.trim() ? (
@@ -561,7 +577,7 @@ export const TrackingView: React.FC = () => {
                 <div
                   key={parcel.id}
                   style={isLegalHold ? { backgroundColor: '#FEF1F0' } : isInfirmary ? { backgroundColor: '#FFFBEB' } : undefined}
-                  className={`p-4 md:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 transition-colors ${
+                  className={`p-4 md:p-5 flex flex-col gap-3 transition-colors ${
                     isSelected
                       ? 'bg-emerald-50/60 ring-2 ring-emerald-400 inset-0'
                       : isLegalHold
@@ -573,7 +589,7 @@ export const TrackingView: React.FC = () => {
                       : 'hover:bg-slate-50/70'
                   }`}
                 >
-                  <div className="flex items-start gap-3 flex-1">
+                  <div className="flex items-start gap-3 w-full">
                     {/* กล่องกาเลือกหลายรายการ */}
                     {canCurrentMemberEdit && (
                       <button
@@ -800,12 +816,52 @@ export const TrackingView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <div
+                    className={`w-full flex flex-wrap items-center justify-end gap-2 pt-3 border-t ${
+                      isLegalHold
+                        ? 'border-red-200/80'
+                        : isInfirmary
+                        ? 'border-amber-200/80'
+                        : 'border-slate-100'
+                    }`}
+                  >
                     {!canCurrentMemberEdit && (
                       <span className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-500 text-xs font-medium border border-slate-200">
                         สิทธิ์ค้นหาเท่านั้น (ไม่อนุญาตให้แก้ไข)
                       </span>
                     )}
+
+                    {/* ปุ่มแก้ไขการรับพัสดุ */}
+                    {canCurrentMemberEdit && (() => {
+                      const isReceivedToday =
+                        extractParcelLocalYMD(parcel) === todayIsoStr ||
+                        parcel.receivedDate === todayIsoStr;
+                      const isStaffOrAdmin =
+                        currentMember?.role === 'ผู้ดูแลระบบ' ||
+                        currentMember?.role === 'เจ้าหน้าที่';
+                      const canEditThisParcel = isStaffOrAdmin || isReceivedToday;
+
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditModal(parcel)}
+                          disabled={!canEditThisParcel}
+                          title={
+                            canEditThisParcel
+                              ? 'แก้ไขการรับพัสดุ (แก้ไขข้อมูลผู้รับพัสดุ, สถานะพัสดุ)'
+                              : 'แก้ไขได้เฉพาะพัสดุที่รับเข้าเฉพาะวันนี้เท่านั้น (เจ้าหน้าที่/ผู้ดูแล แก้ไขได้ตลอด)'
+                          }
+                          className={`min-h-[44px] px-3.5 py-2 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                            canEditThisParcel
+                              ? 'bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-800 border border-blue-200 cursor-pointer shadow-2xs'
+                              : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-60'
+                          }`}
+                        >
+                          <Edit3 className="w-4 h-4 shrink-0" />
+                          <span>แก้ไขการรับพัสดุ</span>
+                        </button>
+                      );
+                    })()}
 
                     {/* ปุ่มแก้ไขวันที่รับ สำหรับพัสดุที่ส่งมอบสำเร็จแล้ว */}
                     {canCurrentMemberEdit && parcel.status === 'ส่งมอบสำเร็จ' && (
@@ -831,7 +887,7 @@ export const TrackingView: React.FC = () => {
                       </>
                     )}
 
-                    {/* ปุ่มส่งมอบสำเร็จ: เปิด Modal เพื่อให้เลือกวันที่รับพัสดุ พร้อมปุ่มด่วน (วันนี้, เมื่อวาน, วันที่) */}
+                    {/* ปุ่มเซ็นรับสำเร็จ / ส่งมอบสำเร็จ: เปิด Modal เพื่อให้เลือกวันที่รับพัสดุ พร้อมปุ่มด่วน (วันนี้, เมื่อวาน, วันที่) */}
                     {canCurrentMemberEdit && parcel.status !== 'ส่งมอบสำเร็จ' && (
                       <button
                         type="button"
@@ -839,7 +895,7 @@ export const TrackingView: React.FC = () => {
                         className="min-h-[44px] px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-semibold rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer shadow-xs"
                       >
                         <CheckCircle2 className="w-4 h-4" />
-                        <span>ส่งมอบสำเร็จ</span>
+                        <span>เซ็นรับสำเร็จ</span>
                       </button>
                     )}
 
@@ -909,6 +965,16 @@ export const TrackingView: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Modal แก้ไขการรับพัสดุ (แก้ไขข้อมูลผู้รับพัสดุ, สถานะพัสดุ) */}
+      <EditInboundParcelModal
+        isOpen={isEditModalOpen}
+        parcel={editingParcel}
+        onClose={() => {
+          setIsEditModalOpen(false);
+          setEditingParcel(null);
+        }}
+      />
 
       {/* Modal เลือกวันที่รับพัสดุ (กรณีรายชิ้น) */}
       <DeliveryDateModal
