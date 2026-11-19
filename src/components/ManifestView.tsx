@@ -146,21 +146,13 @@ export const ManifestView: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // แสดงรายการพัสดุตามหอพักและสถานะ (นำพัสดุที่ลงทะเบียนแล้วมาแสดงในตารางได้เลย รวมถึงของที่ติดนิติการ เพื่อรอพิมพ์ใบนำส่งให้แต่ละหอพัก)
-  const manifestParcels = useMemo(() => {
+  // แสดงรายการพัสดุตามสถานะและวันที่รับเข้า (ก่อนกรองหอพัก เพื่อให้หน้าต่างตัวอย่างการพิมพ์สามารถสลับเลือกพิมพ์หอพักอื่นได้ทันที)
+  const manifestParcelsBeforeDorm = useMemo(() => {
     return parcels.filter((p) => {
-      // 1. กรองตามหอพัก
-      if (selectedDormitory !== 'ALL') {
-        const dorm = (p.dormitory || '').trim();
-        if (dorm !== selectedDormitory.trim()) return false;
-      }
-
       // ดึงวันที่ลงทะเบียนพัสดุ (YYYY-MM-DD)
       const pRegDate = (p.receivedDate || (p.createdAt ? p.createdAt.slice(0, 10) : '')).trim();
 
       // เงื่อนไขสำหรับตัวกรอง: "พัสดุที่ลงทะเบียนแล้ว (ไม่รวมติดนิติการ)"
-      // แสดงพัสดุที่ลงทะเบียนแล้ว (ไม่รวมติดนิติการ) แต่ให้แสดงรายการของติดนิติการ ตามเงื่อนไข:
-      // เมื่อวันที่ลงทะเบียนพัสดุตรงกับวันที่ปัจจุบัน หรือตรงกับ 3.วันที่รับเข้า
       if (selectedStatus === 'REGISTERED_EXCEPT_LEGAL') {
         if (p.status === 'ส่งมอบสำเร็จ') return false;
 
@@ -170,7 +162,6 @@ export const ManifestView: React.FC = () => {
           return isToday || isSelectedReceivedDate;
         }
 
-        // รายการสถานะอื่นๆ ที่ไม่ใช่ติดนิติการ: หากระบุ 3. วันที่รับเข้า ต้องตรงกับวันที่รับเข้า
         if (selectedDate && pRegDate && pRegDate !== selectedDate) {
           return false;
         }
@@ -182,12 +173,12 @@ export const ManifestView: React.FC = () => {
         );
       }
 
-      // 2. กรองตามวันที่รับเข้าถ้ามีการเลือกจากปฏิทิน (สำหรับสถานะอื่นๆ)
+      // กรองตามวันที่รับเข้าถ้ามีการเลือกจากปฏิทิน (สำหรับสถานะอื่นๆ)
       if (selectedDate) {
         if (pRegDate && pRegDate !== selectedDate) return false;
       }
 
-      // 3. กรองตามสถานะอื่นๆ:
+      // กรองตามสถานะอื่นๆ:
       if (selectedStatus === 'ALL_REGISTERED') {
         return (
           p.status === 'ลงทะเบียนรับพัสดุ' ||
@@ -214,11 +205,11 @@ export const ManifestView: React.FC = () => {
       }
       return p.status === selectedStatus;
     });
-  }, [parcels, selectedDormitory, selectedDate, selectedStatus, todayIso]);
+  }, [parcels, selectedDate, selectedStatus, todayIso]);
 
-  // จัดเรียงรายการพัสดุตามรหัสนักเรียน จากมากไปหาน้อย (เป็นค่าเริ่มต้น) เพื่อให้อ่าน ค้นหา และพิมพ์นำส่งเป็นระเบียบ
-  const sortedManifestParcels = useMemo(() => {
-    return [...manifestParcels].sort((a, b) => {
+  // จัดเรียงรายการพัสดุก่อนกรองหอพัก
+  const sortedManifestParcelsBeforeDorm = useMemo(() => {
+    return [...manifestParcelsBeforeDorm].sort((a, b) => {
       if (selectedSort === 'STUDENT_CODE_DESC') {
         const codeCmp = compareStudentCodeDesc(a.studentCode, b.studentCode);
         if (codeCmp !== 0) return codeCmp;
@@ -264,7 +255,18 @@ export const ManifestView: React.FC = () => {
       }
       return (a.studentFullName || '').localeCompare(b.studentFullName || '', 'th');
     });
-  }, [manifestParcels, selectedSort]);
+  }, [manifestParcelsBeforeDorm, selectedSort]);
+
+  // กรองตามหอพักที่เลือกบนหน้าหลัก
+  const sortedManifestParcels = useMemo(() => {
+    if (selectedDormitory === 'ALL') {
+      return sortedManifestParcelsBeforeDorm;
+    }
+    const targetDorm = selectedDormitory.trim();
+    return sortedManifestParcelsBeforeDorm.filter(
+      (p) => (p.dormitory || '').trim() === targetDorm
+    );
+  }, [sortedManifestParcelsBeforeDorm, selectedDormitory]);
 
   const unsignedParcelsInView = useMemo(
     () => sortedManifestParcels.filter((p) => p.status !== 'ส่งมอบสำเร็จ'),
@@ -1293,7 +1295,9 @@ export const ManifestView: React.FC = () => {
         isOpen={isPrintPreviewOpen}
         onClose={() => setIsPrintPreviewOpen(false)}
         parcels={sortedManifestParcels}
+        allStatusFilteredParcels={sortedManifestParcelsBeforeDorm}
         allParcels={parcels}
+        availableDormitories={availableDormitories}
         dormitory={selectedDormitory}
         activeTheme={activeTheme}
         printDateDisplay={todayThaiDisplay}

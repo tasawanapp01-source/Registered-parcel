@@ -1,14 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   Printer,
   X,
-  Check,
   ZoomIn,
   ZoomOut,
+  Building2,
 } from 'lucide-react';
 import {
   Parcel,
   DormitoryTheme,
+  getDormitoryTheme,
+  compareDormitoryNatural,
   formatThaiSlashDate,
   formatStudentCode,
   formatParcelRegistrationDateTime,
@@ -23,7 +25,9 @@ interface ManifestPrintPreviewModalProps {
   isOpen: boolean;
   onClose: () => void;
   parcels: Parcel[];
+  allStatusFilteredParcels?: Parcel[];
   allParcels?: Parcel[];
+  availableDormitories?: string[];
   dormitory: string;
   activeTheme: DormitoryTheme;
   printDateDisplay: string;
@@ -32,13 +36,50 @@ interface ManifestPrintPreviewModalProps {
   selectedSortLabel?: string;
 }
 
+interface ManifestPrintGroup {
+  key: string;
+  dormitory: string;
+  theme: DormitoryTheme;
+  parcels: Parcel[];
+}
+
+interface PageChunk {
+  parcels: Parcel[];
+  startIndex: number;
+}
+
+const SEPARATE_BY_DORM_VALUE = 'SEPARATE_BY_DORM';
+
+// A4 printable area at 96dpi minus 6mm margins on each side and safety buffer:
+// Portrait: 210mm x 297mm -> 198mm x 280mm (~748px x 1058px)
+// Landscape: 297mm x 210mm -> 285mm x 193mm (~1077px x 729px)
+const PRINT_WIDTH_PX_PORTRAIT = 748;
+const PRINT_WIDTH_PX_LANDSCAPE = 1077;
+const PRINT_HEIGHT_PX_PORTRAIT = 1058;
+const PRINT_HEIGHT_PX_LANDSCAPE = 729;
+
+function buildFallbackChunks(parcels: Parcel[], perPage: number): PageChunk[] {
+  if (parcels.length === 0) {
+    return [{ parcels: [], startIndex: 0 }];
+  }
+  const chunks: PageChunk[] = [];
+  for (let i = 0; i < parcels.length; i += perPage) {
+    chunks.push({
+      parcels: parcels.slice(i, i + perPage),
+      startIndex: i,
+    });
+  }
+  return chunks;
+}
+
 export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps> = ({
   isOpen,
   onClose,
   parcels,
+  allStatusFilteredParcels,
   allParcels,
+  availableDormitories,
   dormitory,
-  activeTheme,
   printDateDisplay,
   selectedStatusLabel,
   selectedDate,
@@ -47,10 +88,218 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
   const [orientation, setOrientation] = useState<PrintOrientation>('portrait');
   const [density, setDensity] = useState<RowDensity>('compact');
   const [zoomLevel, setZoomLevel] = useState<number>(100);
+  const [printDormitory, setPrintDormitory] = useState<string>(dormitory || 'ALL');
+  const [measuredChunksByGroup, setMeasuredChunksByGroup] = useState<Record<string, PageChunk[]>>({});
 
-  const studentParcelSummaryMap = React.useMemo(() => {
-    return buildStudentParcelSummaryMap(allParcels || parcels, selectedDate);
-  }, [allParcels, parcels, selectedDate]);
+  const measureRootRef = useRef<HTMLDivElement | null>(null);
+
+  // ซิงค์ค่าหอพักเริ่มต้นเมื่อเปิดหน้าต่างตัวอย่างการพิมพ์
+  useEffect(() => {
+    if (isOpen) {
+      setPrintDormitory(dormitory || 'ALL');
+    }
+  }, [isOpen, dormitory]);
+
+  const sourceParcels = useMemo(() => {
+    return allStatusFilteredParcels ?? parcels;
+  }, [allStatusFilteredParcels, parcels]);
+
+  // รายชื่อหอพักทั้งหมดที่มีในข้อมูลและจากรายการที่ส่งเข้ามา
+  const dormitoryOptions = useMemo(() => {
+    const set = new Set<string>(availableDormitories || []);
+    for (const p of sourceParcels) {
+      const d = (p.dormitory || '').trim();
+      if (d && d !== '-') {
+        set.add(d);
+      }
+    }
+    if (dormitory && dormitory !== 'ALL' && dormitory !== SEPARATE_BY_DORM_VALUE) {
+      set.add(dormitory.trim());
+    }
+    return Array.from(set).sort(compareDormitoryNatural);
+  }, [availableDormitories, sourceParcels, dormitory]);
+
+  const dormCountMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const p of sourceParcels) {
+      const d = (p.dormitory || '').trim() || 'ยังไม่ระบุหอพัก';
+      map.set(d, (map.get(d) || 0) + 1);
+    }
+    return map;
+  }, [sourceParcels]);
+
+  const studentParcelSummaryMap = useMemo(() => {
+    return buildStudentParcelSummaryMap(allParcels || sourceParcels, selectedDate);
+  }, [allParcels, sourceParcels, selectedDate]);
+
+  // จัดกลุ่มรายการพิมพ์ตามตัวเลือก "เลือกพิมพ์หอพัก"
+  const manifestGroups = useMemo<ManifestPrintGroup[]>(() => {
+    if (printDormitory === 'ALL') {
+      return [
+        {
+          key: 'ALL',
+          dormitory: 'ALL',
+          theme: getDormitoryTheme('ทุกหอพักรวม'),
+          parcels: sourceParcels,
+        },
+      ];
+    }
+
+    if (printDormitory === SEPARATE_BY_DORM_VALUE) {
+      const grouped = new Map<string, Parcel[]>();
+      for (const p of sourceParcels) {
+        const d = (p.dormitory || '').trim() || 'ยังไม่ระบุหอพัก';
+        const list = grouped.get(d);
+        if (list) {
+          list.push(p);
+        } else {
+          grouped.set(d, [p]);
+        }
+      }
+
+      if (grouped.size === 0) {
+        return [
+          {
+            key: 'EMPTY',
+            dormitory: 'ALL',
+            theme: getDormitoryTheme('ทุกหอพักรวม'),
+            parcels: [],
+          },
+        ];
+      }
+
+      const sortedKeys = Array.from(grouped.keys()).sort((a, b) => {
+        if (a === 'ยังไม่ระบุหอพัก') return 1;
+        if (b === 'ยังไม่ระบุหอพัก') return -1;
+        return compareDormitoryNatural(a, b);
+      });
+
+      return sortedKeys.map((dormName) => ({
+        key: `DORM::${dormName}`,
+        dormitory: dormName,
+        theme: getDormitoryTheme(dormName === 'ยังไม่ระบุหอพัก' ? '' : dormName),
+        parcels: grouped.get(dormName) || [],
+      }));
+    }
+
+    const targetDorm = printDormitory.trim();
+    const filtered = sourceParcels.filter(
+      (p) => ((p.dormitory || '').trim() || 'ยังไม่ระบุหอพัก') === targetDorm
+    );
+    return [
+      {
+        key: `SINGLE::${targetDorm}`,
+        dormitory: targetDorm,
+        theme: getDormitoryTheme(targetDorm === 'ยังไม่ระบุหอพัก' ? '' : targetDorm),
+        parcels: filtered,
+      },
+    ];
+  }, [printDormitory, sourceParcels]);
+
+  const isLandscape = orientation === 'landscape';
+
+  // คำนวณการแบ่งหน้าอัตโนมัติตามความสูงจริงของแต่ละแถวใน A4 เพื่อไม่ให้ล้นหน้าและพิมพ์ซ้ำหัวกระดาษได้ครบทุกหน้า
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const root = measureRootRef.current;
+    if (!root) return;
+
+    const printableHeight = isLandscape ? PRINT_HEIGHT_PX_LANDSCAPE : PRINT_HEIGHT_PX_PORTRAIT;
+    const topBarEl = root.querySelector('[data-measure="top-bar"]') as HTMLElement | null;
+    const theadEl = root.querySelector('[data-measure="thead"]') as HTMLElement | null;
+    const footerEl = root.querySelector('[data-measure="footer"]') as HTMLElement | null;
+
+    const topBarHeight = topBarEl ? topBarEl.getBoundingClientRect().height + 4 : 22;
+    const theadHeight = theadEl ? theadEl.getBoundingClientRect().height : 32;
+    const footerHeight = footerEl ? footerEl.getBoundingClientRect().height + 10 : 48;
+
+    const nextMap: Record<string, PageChunk[]> = {};
+
+    for (const group of manifestGroups) {
+      const headerEl = root.querySelector(
+        `[data-measure-header="${CSS.escape(group.key)}"]`
+      ) as HTMLElement | null;
+      const headerHeight = headerEl ? headerEl.getBoundingClientRect().height + 8 : 66;
+
+      // เว้นระยะเผื่อ 22px ป้องกันเส้นขอบหรือการปัดเศษของเบราว์เซอร์ดันขึ้นหน้าใหม่โดยไม่ตั้งใจ
+      const availableBodyHeight = Math.max(
+        140,
+        printableHeight - topBarHeight - headerHeight - theadHeight - footerHeight - 22
+      );
+
+      if (group.parcels.length === 0) {
+        nextMap[group.key] = [{ parcels: [], startIndex: 0 }];
+        continue;
+      }
+
+      const chunks: PageChunk[] = [];
+      let currentParcels: Parcel[] = [];
+      let currentStartIndex = 0;
+      let currentHeight = 0;
+
+      group.parcels.forEach((p, idx) => {
+        const rowKey = `${group.key}::${p.id}::${idx}`;
+        const rowEl = root.querySelector(
+          `[data-measure-row="${CSS.escape(rowKey)}"]`
+        ) as HTMLElement | null;
+        const rowHeight = rowEl
+          ? rowEl.getBoundingClientRect().height
+          : density === 'compact'
+          ? 30
+          : 38;
+
+        if (currentParcels.length > 0 && currentHeight + rowHeight > availableBodyHeight) {
+          chunks.push({
+            parcels: currentParcels,
+            startIndex: currentStartIndex,
+          });
+          currentParcels = [p];
+          currentStartIndex = idx;
+          currentHeight = rowHeight;
+        } else {
+          currentParcels.push(p);
+          currentHeight += rowHeight;
+        }
+      });
+
+      if (currentParcels.length > 0) {
+        chunks.push({
+          parcels: currentParcels,
+          startIndex: currentStartIndex,
+        });
+      }
+
+      nextMap[group.key] = chunks;
+    }
+
+    setMeasuredChunksByGroup((prev) => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(nextMap);
+      if (prevKeys.length === nextKeys.length) {
+        let same = true;
+        for (const k of nextKeys) {
+          const a = prev[k];
+          const b = nextMap[k];
+          if (!a || !b || a.length !== b.length) {
+            same = false;
+            break;
+          }
+          for (let i = 0; i < a.length; i++) {
+            if (
+              a[i].startIndex !== b[i].startIndex ||
+              a[i].parcels.length !== b[i].parcels.length
+            ) {
+              same = false;
+              break;
+            }
+          }
+          if (!same) break;
+        }
+        if (same) return prev;
+      }
+      return nextMap;
+    });
+  }, [isOpen, orientation, density, manifestGroups, isLandscape, studentParcelSummaryMap]);
 
   // ปิดด้วยปุ่ม Escape
   useEffect(() => {
@@ -78,16 +327,381 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
 
   if (!isOpen) return null;
 
-  const signedCount = parcels.filter((p) => p.status === 'ส่งมอบสำเร็จ').length;
-  const unsignedCount = parcels.length - signedCount;
-  const legalHoldCount = parcels.filter((p) => p.status === 'ติดนิติการ').length;
-  const infirmaryCount = parcels.filter((p) => p.status === 'ติดต่องานพยาบาล').length;
+  const fallbackPerPage = isLandscape
+    ? density === 'compact'
+      ? 16
+      : 13
+    : density === 'compact'
+    ? 25
+    : 20;
+
+  const resolvedPages = manifestGroups.flatMap((group) => {
+    const chunks =
+      measuredChunksByGroup[group.key] ||
+      buildFallbackChunks(group.parcels, fallbackPerPage);
+    const totalPagesInGroup = chunks.length;
+    return chunks.map((chunk, pageIndexInGroup) => ({
+      group,
+      chunk,
+      pageNumber: pageIndexInGroup + 1,
+      totalPages: totalPagesInGroup,
+      pageKey: `${group.key}::page-${pageIndexInGroup + 1}`,
+    }));
+  });
+
+  const totalDisplayedParcels = manifestGroups.reduce((sum, g) => sum + g.parcels.length, 0);
+  const totalPagesCount = resolvedPages.length;
+
+  const currentDormSummaryText =
+    printDormitory === 'ALL'
+      ? 'ทุกหอพักรวมกัน'
+      : printDormitory === SEPARATE_BY_DORM_VALUE
+      ? `พิมพ์แยกทีละหอพัก (${manifestGroups.length} หอ)`
+      : `${getDormitoryTheme(printDormitory).name} (${getDormitoryTheme(printDormitory).basketCode})`;
 
   const handlePrint = () => {
     window.print();
   };
 
-  const isLandscape = orientation === 'landscape';
+  // Helper แสดงตาราง (ใช้ร่วมกันทั้งหน้าจริงและตัววัดความสูง)
+  const renderTableHeader = () =>
+    isLandscape ? (
+      <thead
+        data-measure="thead"
+        className="table-header-group border-y-2 border-slate-900 bg-slate-100 text-slate-900 font-bold text-[10.5px]"
+      >
+        <tr className="border-y-2 border-slate-900 bg-slate-100">
+          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[4%] bg-slate-100 font-bold text-slate-900">ลำดับ</th>
+          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[18%] bg-slate-100 font-bold text-slate-900">เลขพัสดุ (Tracking)</th>
+          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[11%] bg-slate-100 font-bold text-slate-900">ขนส่ง</th>
+          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[9%] bg-slate-100 font-bold text-slate-900">รหัส นร.</th>
+          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[20%] bg-slate-100 font-bold text-slate-900">
+            ชื่อ-นามสกุลนักเรียน
+          </th>
+          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[19%] bg-slate-100 font-bold text-slate-900">ประเภทสิ่งของ</th>
+          <th className="py-2 px-1.5 border border-slate-400 text-center align-middle w-[12%] bg-slate-100 font-bold text-slate-900">
+            ลายมือชื่อผู้รับ
+          </th>
+          <th className="py-2 px-1.5 border border-slate-400 text-center align-middle w-[7%] bg-slate-100 font-bold text-slate-900">
+            วันที่รับ
+          </th>
+        </tr>
+      </thead>
+    ) : (
+      <thead
+        data-measure="thead"
+        className="table-header-group border-y-2 border-slate-900 bg-slate-100 text-slate-900 font-bold text-[10px]"
+      >
+        <tr className="border-y-2 border-slate-900 bg-slate-100">
+          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[5%] bg-slate-100 font-bold text-slate-900">ลำดับ</th>
+          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[16%] bg-slate-100 font-bold text-slate-900">เลขพัสดุ / ขนส่ง</th>
+          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[9%] bg-slate-100 font-bold text-slate-900">รหัส นร.</th>
+          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[21%] bg-slate-100 font-bold text-slate-900">
+            ชื่อ-นามสกุลนักเรียน
+          </th>
+          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[27%] bg-slate-100 font-bold text-slate-900">ประเภทสิ่งของ</th>
+          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[12%] bg-slate-100 font-bold text-slate-900">
+            ลายมือชื่อผู้รับ
+          </th>
+          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[10%] bg-slate-100 font-bold text-slate-900">
+            วันที่รับ
+          </th>
+        </tr>
+      </thead>
+    );
+
+  const renderParcelRow = (
+    p: Parcel,
+    displaySeq: number,
+    keyStr: string,
+    measureRowAttr?: string
+  ) => {
+    const isSigned = p.status === 'ส่งมอบสำเร็จ';
+    const isLegalHold = p.status === 'ติดนิติการ';
+    const isInfirmary = p.status === 'ติดต่องานพยาบาล';
+    const isGreenTracking = isGreenHighlightTrackingNumber(p.trackingNumber, p);
+    const isRdCategory = Boolean(p.category?.trim().toUpperCase().endsWith('-RD'));
+    const cellPy = density === 'compact' ? 'py-1' : 'py-1.5';
+    const recordedDate = isSigned
+      ? formatThaiSlashDate(p.deliveredDate || p.receivedDate || p.updatedAt)
+      : '';
+
+    const rowStyle = isLegalHold
+      ? { backgroundColor: '#FEF1F0', WebkitPrintColorAdjust: 'exact' as const, printColorAdjust: 'exact' as const }
+      : isInfirmary
+      ? { backgroundColor: '#FFFBEB', WebkitPrintColorAdjust: 'exact' as const, printColorAdjust: 'exact' as const }
+      : undefined;
+
+    const rowClass = `border-b break-inside-avoid ${
+      isLegalHold
+        ? 'bg-[#FEF1F0] text-rose-950 font-medium border-rose-300 print-highlight-legal print:bg-[#FEF1F0]'
+        : isInfirmary
+        ? 'bg-amber-50/70 text-amber-950 font-medium border-amber-300 print-highlight-infirmary print:bg-[#FFFBEB]'
+        : 'bg-white border-slate-300'
+    }`;
+
+    if (isLandscape) {
+      return (
+        <tr key={keyStr} data-measure-row={measureRowAttr} style={rowStyle} className={rowClass}>
+          <td className={`${cellPy} px-1 border border-slate-300 text-center font-mono font-semibold tabular-nums text-slate-700`}>
+            {displaySeq}
+          </td>
+          <td className={`${cellPy} px-2 border border-slate-300 font-mono font-bold tabular-nums truncate`}>
+            <div
+              style={{
+                color: isLegalHold ? '#DC2626' : isGreenTracking ? '#166534' : '#000000',
+                WebkitPrintColorAdjust: 'exact',
+                printColorAdjust: 'exact',
+              }}
+              className={`font-mono font-bold tabular-nums truncate font-extrabold ${
+                isLegalHold
+                  ? 'text-red-600 font-black print-legal-tracking'
+                  : isGreenTracking
+                  ? 'text-emerald-800 font-black print-green-tracking'
+                  : 'text-slate-900 print-black-tracking'
+              }`}
+            >
+              {p.trackingNumber}
+            </div>
+          </td>
+          <td className={`${cellPy} px-2 border border-slate-300 text-slate-700 truncate`}>
+            {p.courier}
+          </td>
+          <td className={`${cellPy} px-1 border border-slate-300 text-center font-mono font-semibold text-slate-900 tabular-nums`}>
+            {formatStudentCode(p.studentCode)}
+          </td>
+          <td className={`${cellPy} px-2 border border-slate-300 leading-tight`}>
+            <div className="font-bold text-slate-900 truncate">
+              <span>{p.studentFullName}</span>
+              {p.nickname && <span className="text-slate-600 font-normal ml-1">({p.nickname})</span>}
+              {p.gradeRoom && <span className="text-slate-500 font-normal text-[10px] ml-1.5">ชั้น {p.gradeRoom}</span>}
+            </div>
+            {studentParcelSummaryMap.get(p.id) && (
+              <div
+                style={{ color: '#166534', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
+                className="text-[8.5px] font-mono text-emerald-800 font-semibold leading-tight mt-0.5 truncate print-student-parcel-summary"
+              >
+                {studentParcelSummaryMap.get(p.id)!.displayText}
+              </div>
+            )}
+          </td>
+          <td className={`${cellPy} px-2 border border-slate-300 leading-tight`}>
+            <div
+              style={isRdCategory ? { color: '#DC2626', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : undefined}
+              className={`font-semibold truncate ${
+                isRdCategory ? 'text-red-600 print-rd-category font-bold' : 'text-slate-800'
+              }`}
+            >
+              {p.category}
+            </div>
+            <div className="text-[9px] sm:text-[9.5px] leading-tight mt-0.5">
+              <span
+                style={{ color: '#166534', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
+                className="font-bold text-emerald-800 print-reg-date-time font-mono"
+              >
+                {formatParcelRegistrationDateTime(p)}
+              </span>
+              {isLegalHold && (
+                <span
+                  style={{ color: '#DC2626', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
+                  className="font-bold text-red-700 print-legal-tag ml-1"
+                >
+                  [ติดนิติการ{p.note && p.note.trim() && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' ? `: ${p.note.trim()}` : ''}]
+                </span>
+              )}
+              {isInfirmary && (
+                <span className="font-bold text-amber-800 ml-1">
+                  [ติดต่องานพยาบาล]
+                </span>
+              )}
+            </div>
+          </td>
+          <td className={`${cellPy} px-1 border border-slate-300 text-center`}>
+            {isSigned ? (
+              <div className="text-emerald-700 font-bold text-[9.5px] text-center leading-tight">
+                เซ็นรับแล้ว
+              </div>
+            ) : (
+              <div className="w-16 mx-auto pt-2.5 border-b border-dotted border-slate-400 text-[8px] text-slate-400 text-center">
+                ลงชื่อ
+              </div>
+            )}
+          </td>
+          <td className={`${cellPy} px-1 border border-slate-300 text-center`}>
+            {isSigned ? (
+              <div className="text-emerald-700 font-bold text-[9.5px] text-center leading-tight">
+                {recordedDate}
+              </div>
+            ) : (
+              <div className="w-12 mx-auto pt-2.5 border-b border-dotted border-slate-400 text-[8px] text-slate-400 text-center">
+                ว/ด/ป
+              </div>
+            )}
+          </td>
+        </tr>
+      );
+    }
+
+    return (
+      <tr key={keyStr} data-measure-row={measureRowAttr} style={rowStyle} className={rowClass}>
+        <td className={`${cellPy} px-1 border border-slate-300 text-center font-mono font-semibold tabular-nums text-slate-700`}>
+          {displaySeq}
+        </td>
+        <td className={`${cellPy} px-2 border border-slate-300 leading-tight`}>
+          <div
+            style={{
+              color: isLegalHold ? '#DC2626' : isGreenTracking ? '#166534' : '#000000',
+              WebkitPrintColorAdjust: 'exact',
+              printColorAdjust: 'exact',
+            }}
+            className={`font-mono font-bold tabular-nums truncate font-extrabold ${
+              isLegalHold
+                ? 'text-red-600 font-black print-legal-tracking'
+                : isGreenTracking
+                ? 'text-emerald-800 font-black print-green-tracking'
+                : 'text-slate-900 print-black-tracking'
+            }`}
+          >
+            {p.trackingNumber}
+          </div>
+          <div className="text-[9px] text-slate-500 truncate">{p.courier}</div>
+        </td>
+        <td className={`${cellPy} px-1 border border-slate-300 text-center font-mono font-semibold text-slate-900 tabular-nums`}>
+          {formatStudentCode(p.studentCode)}
+        </td>
+        <td className={`${cellPy} px-2 border border-slate-300 leading-tight`} title={`${p.studentFullName} ${p.nickname ? `(${p.nickname})` : ''} ชั้น ${p.gradeRoom}`}>
+          <div className="font-bold text-slate-900 truncate">
+            <span>{p.studentFullName}</span>
+            {p.nickname && <span className="text-slate-600 font-normal ml-1">({p.nickname})</span>}
+            {p.gradeRoom && <span className="text-slate-500 font-normal text-[9.5px] ml-1">ชั้น {p.gradeRoom}</span>}
+          </div>
+          {studentParcelSummaryMap.get(p.id) && (
+            <div
+              style={{ color: '#166534', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
+              className="text-[8px] sm:text-[8.5px] font-mono text-emerald-800 font-semibold leading-tight mt-0.5 truncate print-student-parcel-summary"
+            >
+              {studentParcelSummaryMap.get(p.id)!.displayText}
+            </div>
+          )}
+        </td>
+        <td className={`${cellPy} px-2 border border-slate-300 leading-tight`}>
+          <div
+            style={isRdCategory ? { color: '#DC2626', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : undefined}
+            className={`font-semibold truncate ${
+              isRdCategory ? 'text-red-600 print-rd-category font-bold' : 'text-slate-800'
+            }`}
+          >
+            {p.category}
+          </div>
+          <div className="text-[8.5px] sm:text-[9.5px] leading-tight mt-0.5">
+            <span
+              style={{ color: '#166534', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
+              className="font-bold text-emerald-800 print-reg-date-time font-mono"
+            >
+              {formatParcelRegistrationDateTime(p)}
+            </span>
+            {isLegalHold && (
+              <span
+                style={{ color: '#DC2626', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
+                className="font-bold text-red-700 print-legal-tag ml-1"
+              >
+                [ติดนิติการ{p.note && p.note.trim() && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' ? `: ${p.note.trim()}` : ''}]
+              </span>
+            )}
+            {isInfirmary && (
+              <span className="font-bold text-amber-800 ml-1">
+                [ติดต่องานพยาบาล]
+              </span>
+            )}
+          </div>
+        </td>
+        <td className={`${cellPy} px-1 border border-slate-300 text-center`}>
+          {isSigned ? (
+            <div className="text-emerald-700 font-bold text-[9.5px] text-center leading-tight">
+              เซ็นรับแล้ว
+            </div>
+          ) : (
+            <div className="w-16 mx-auto pt-2 border-b border-dotted border-slate-400 text-[8px] text-slate-400 text-center">
+              ลงชื่อ
+            </div>
+          )}
+        </td>
+        <td className={`${cellPy} px-1 border border-slate-300 text-center`}>
+          {isSigned ? (
+            <div className="text-emerald-700 font-bold text-[9.5px] text-center leading-tight">
+              {recordedDate}
+            </div>
+          ) : (
+            <div className="w-14 mx-auto pt-2 border-b border-dotted border-slate-400 text-[8px] text-slate-400 text-center">
+              ว/ด/ป
+            </div>
+          )}
+        </td>
+      </tr>
+    );
+  };
+
+  const renderDocumentHeader = (group: ManifestPrintGroup) => {
+    const signedCount = group.parcels.filter((p) => p.status === 'ส่งมอบสำเร็จ').length;
+    const unsignedCount = group.parcels.length - signedCount;
+    const legalHoldCount = group.parcels.filter((p) => p.status === 'ติดนิติการ').length;
+    const infirmaryCount = group.parcels.filter((p) => p.status === 'ติดต่องานพยาบาล').length;
+
+    return (
+      <header className="border-b-2 border-slate-900 pb-2 mb-2 flex flex-row items-center justify-between gap-3 shrink-0">
+        <div className="space-y-0.5 min-w-0">
+          <h1 className="text-base sm:text-[17px] font-extrabold text-slate-900 tracking-tight leading-snug">
+            ใบรายการนำส่งและลงนามรับพัสดุนักเรียนประจำหอพัก
+          </h1>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-slate-600 font-mono">
+            <span>วันที่พิมพ์: <strong className="text-slate-900">{printDateDisplay}</strong></span>
+            {selectedDate && (
+              <span>· รับเข้า: <strong className="text-slate-900">{formatThaiSlashDate(selectedDate)}</strong></span>
+            )}
+            {selectedStatusLabel && (
+              <span>· ตัวกรอง: <strong className="text-slate-900">{selectedStatusLabel}</strong></span>
+            )}
+            {selectedSortLabel && (
+              <span>· เรียงตาม: <strong className="text-slate-900">{selectedSortLabel}</strong></span>
+            )}
+            <span>· รวมทั้งหมด <strong className="text-slate-900">{group.parcels.length}</strong> รายการ</span>
+            <span>
+              (เซ็นแล้ว {signedCount} / รอเซ็น {unsignedCount}
+              {infirmaryCount > 0 ? `, งานพยาบาล ${infirmaryCount}` : ''}
+              {legalHoldCount > 0 ? `, ติดนิติการ ${legalHoldCount}` : ''})
+            </span>
+          </div>
+        </div>
+
+        {/* ป้ายแสดงหอพักและรหัสตะกร้าสี (ใส่สีตะกร้าหอพัก) */}
+        <div
+          className={`dorm-basket-badge border-2 ${group.theme.borderClass} ${group.theme.bgClass} rounded-lg px-2.5 py-1 text-right shrink-0 shadow-2xs`}
+          style={{
+            borderColor: group.theme.hexColor || undefined,
+            WebkitPrintColorAdjust: 'exact',
+            printColorAdjust: 'exact',
+          }}
+        >
+          <div className={`text-xs sm:text-sm font-extrabold leading-tight ${group.theme.textClass}`}>
+            {group.dormitory === 'ALL' ? 'ทุกหอพักรวม' : group.theme.name}
+          </div>
+          <div className="text-[10px] font-mono font-bold text-slate-800 flex items-center justify-end gap-1.5 mt-0.5">
+            <span
+              className="inline-block w-2.5 h-2.5 rounded-full border border-slate-900/20 shrink-0"
+              style={{
+                backgroundColor: group.theme.hexColor,
+                WebkitPrintColorAdjust: 'exact',
+                printColorAdjust: 'exact',
+              }}
+            />
+            <span>
+              {group.theme.basketCode} ({group.theme.colorName})
+            </span>
+          </div>
+        </div>
+      </header>
+    );
+  };
 
   return (
     <div
@@ -96,14 +710,13 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
       aria-label="ตัวอย่างการพิมพ์ใบนำส่งหอพัก"
       className="fixed inset-0 z-50 flex flex-col bg-white modal-print-wrapper overflow-hidden"
     >
-      {/* Dynamic @page CSS rule and repeating table header rule for multi-page printouts */}
+      {/* Dynamic @page CSS rule and A4 multi-page layout rules */}
       <style>{`
         @media print {
           @page {
             size: A4 ${orientation};
             margin: 6mm 6mm 6mm 6mm;
           }
-          /* 1. พื้นหลังหน้ากระดาษและเอกสารภายนอกเป็นสีขาว */
           html, body {
             background-color: #FFFFFF !important;
             background: #FFFFFF !important;
@@ -133,22 +746,45 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             max-width: 100% !important;
             display: block !important;
           }
-          .manifest-a4-sheet {
+          .manifest-pages-stack {
+            transform: none !important;
+            gap: 0 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            width: 100% !important;
+            display: block !important;
+          }
+          .manifest-a4-page {
             box-shadow: none !important;
             border: none !important;
+            border-radius: 0 !important;
             padding: 0 !important;
             margin: 0 !important;
             width: 100% !important;
             max-width: 100% !important;
-            min-height: auto !important;
-            transform: none !important;
-            border-radius: 0 !important;
+            height: ${isLandscape ? '193mm' : '280mm'} !important;
+            min-height: ${isLandscape ? '193mm' : '280mm'} !important;
+            max-height: ${isLandscape ? '193mm' : '280mm'} !important;
+            display: flex !important;
+            flex-direction: column !important;
             box-sizing: border-box !important;
             background-color: #FFFFFF !important;
             background: #FFFFFF !important;
+            overflow: hidden !important;
+            break-after: page !important;
+            page-break-after: always !important;
+          }
+          .manifest-a4-page:last-child {
+            break-after: auto !important;
+            page-break-after: auto !important;
           }
 
-          /* 2. ตารางรายการพัสดุ */
+          .print-page-number {
+            color: #000000 !important;
+            font-weight: 700 !important;
+          }
+
+          /* ตารางรายการพัสดุ */
           table {
             width: 100% !important;
             max-width: 100% !important;
@@ -160,7 +796,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             border: 1px solid #000000 !important;
           }
 
-          /* 3. ใส่สีหัวตาราง */
+          /* ใส่สีหัวตาราง */
           thead {
             display: table-header-group !important;
           }
@@ -185,7 +821,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             print-color-adjust: exact !important;
           }
 
-          /* 4. เนื้อหาตาราง และสีไฮไลท์สถานะแถว */
+          /* เนื้อหาตาราง และสีไฮไลท์สถานะแถว */
           tbody {
             display: table-row-group !important;
             background-color: #FFFFFF !important;
@@ -195,7 +831,6 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             break-inside: avoid !important;
             page-break-inside: avoid !important;
           }
-          /* แถวปกติพื้นหลังสีขาว */
           tbody tr:not(.print-highlight-legal):not(.print-highlight-infirmary),
           tbody tr:not(.print-highlight-legal):not(.print-highlight-infirmary) td {
             background-color: #FFFFFF !important;
@@ -203,7 +838,6 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             color: #000000 !important;
             border: 1px solid #64748B !important;
           }
-          /* สีไฮไลท์สถานะแถว: ติดนิติการ */
           tbody tr.print-highlight-legal,
           tbody tr.print-highlight-legal td {
             background-color: #FEF1F0 !important;
@@ -213,7 +847,6 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
           }
-          /* สีไฮไลท์สถานะแถว: ติดต่องานพยาบาล */
           tbody tr.print-highlight-infirmary,
           tbody tr.print-highlight-infirmary td {
             background-color: #FFFBEB !important;
@@ -224,14 +857,12 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             print-color-adjust: exact !important;
           }
 
-          /* 5. ใส่สีตะกร้าหอพัก */
           .dorm-basket-badge,
           .dorm-basket-badge * {
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
           }
 
-          /* 6. สีแดงสำหรับรหัสที่ลงท้ายด้วย -RD ในคอลัมน์ประเภทสิ่งของ */
           .print-rd-category,
           tbody tr td.print-rd-category,
           tbody tr td .print-rd-category {
@@ -240,7 +871,6 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             print-color-adjust: exact !important;
           }
 
-          /* ตัวอักษรสีเขียวเข้ม สำหรับเลขพัสดุที่ขึ้นต้นด้วย PRT และเลขพัสดุที่ทำการสุ่มด้วยระบบ */
           .print-green-tracking,
           td.print-green-tracking,
           td .print-green-tracking,
@@ -257,7 +887,6 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             print-color-adjust: exact !important;
           }
 
-          /* ตัวอักษรสีแดง สำหรับเลขพัสดุที่ติดนิติการ */
           .print-legal-tracking,
           td.print-legal-tracking,
           td .print-legal-tracking,
@@ -273,7 +902,6 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             print-color-adjust: exact !important;
           }
 
-          /* เลขพัสดุปกติใช้ตัวอักษรสีดำ */
           .print-black-tracking,
           td .print-black-tracking,
           div.print-black-tracking,
@@ -285,7 +913,6 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             print-color-adjust: exact !important;
           }
 
-          /* 7. สีเขียวเข้มสำหรับ วันที่ลงทะเบียนพัสดุ เวลา สรุปพัสดุนักเรียน และสีแดงสำหรับป้าย [ติดนิติการ] */
           .print-reg-date-time,
           .print-student-parcel-summary {
             color: #166534 !important;
@@ -300,7 +927,57 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
         }
       `}</style>
 
-      {/* แถบเครื่องมือควบคุมการพิมพ์ (Toolbar) โทนสว่าง - ซ่อนอัตโนมัติเมื่อพิมพ์ด้วย class no-print */}
+      {/* ตัววัดขนาดความสูงแถวแบบซ่อนบนหน้าจอ เพื่อให้การแบ่งหน้า A4 แม่นยำตรงกับการพิมพ์จริง */}
+      <div
+        ref={measureRootRef}
+        aria-hidden="true"
+        style={{
+          width: isLandscape ? `${PRINT_WIDTH_PX_LANDSCAPE}px` : `${PRINT_WIDTH_PX_PORTRAIT}px`,
+        }}
+        className="no-print fixed -left-[99999px] top-0 pointer-events-none opacity-0 bg-white text-slate-900"
+      >
+        <div data-measure="top-bar" className="flex items-center justify-between gap-2 mb-1 text-[10px] font-mono">
+          <span>ใบนำส่ง</span>
+          <span className="font-bold tabular-nums">หน้าที่ 1 / 1</span>
+        </div>
+
+        {manifestGroups.map((group) => (
+          <div key={`m-hdr-${group.key}`} data-measure-header={group.key}>
+            {renderDocumentHeader(group)}
+          </div>
+        ))}
+
+        <table className="w-full table-fixed border-collapse text-left border border-slate-400 bg-white">
+          {renderTableHeader()}
+          <tbody className={isLandscape ? 'table-row-group text-[10.5px]' : 'table-row-group text-[10px]'}>
+            {manifestGroups.flatMap((group) =>
+              group.parcels.map((p, idx) =>
+                renderParcelRow(
+                  p,
+                  idx + 1,
+                  `m-row-${group.key}-${p.id}-${idx}`,
+                  `${group.key}::${p.id}::${idx}`
+                )
+              )
+            )}
+          </tbody>
+        </table>
+
+        <footer
+          data-measure="footer"
+          className="pt-1.5 border-t border-slate-300 flex items-end justify-between gap-3 text-[10px] text-slate-600"
+        >
+          <div className="space-y-0.5 min-w-0">
+            <div className="font-mono">รวมทั้งสิ้น 0 รายการ</div>
+            <div className="text-[9px] font-sans">* เลขพัสดุสีดำ/เขียวเข้ม/แดง</div>
+          </div>
+          <div className="shrink-0 font-mono font-bold text-[10.5px] tabular-nums">
+            หน้าที่ 1 / 1
+          </div>
+        </footer>
+      </div>
+
+      {/* แถบเครื่องมือควบคุมการพิมพ์ (Toolbar) - ซ่อนอัตโนมัติเมื่อพิมพ์ด้วย class no-print */}
       <header className="no-print bg-white border-b border-slate-200 px-4 py-3 shrink-0 text-slate-900 shadow-xs">
         <div className="max-w-7xl mx-auto flex flex-col gap-2.5">
           {/* แถวที่ 1: ข้อมูลหัวเรื่อง & สรุป */}
@@ -317,14 +994,16 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
                   <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
                     A4 {isLandscape ? 'แนวนอน' : 'แนวตั้ง'}
                   </span>
+                  <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
+                    {totalPagesCount} หน้า
+                  </span>
                 </div>
                 <p className="text-xs text-slate-500 truncate">
-                  {dormitory === 'ALL' ? 'ทุกหอพักรวมกัน' : activeTheme.name} ({activeTheme.basketCode}) · รวม {parcels.length} ชิ้น
+                  {currentDormSummaryText} · รวม {totalDisplayedParcels} ชิ้น · พิมพ์ซ้ำหัวกระดาษและเลขหน้าทุกหน้า
                 </p>
               </div>
             </div>
 
-            {/* ปุ่มปิดกากบาทแบบรวดเร็ว */}
             <button
               type="button"
               onClick={onClose}
@@ -336,528 +1015,257 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             </button>
           </div>
 
-          {/* แถวที่ 2 (ลงมาอยู่บรรทัดใหม่ จัดชิดขวา): แผงควบคุมทั้งหมด */}
-          <div className="flex flex-wrap items-center justify-end gap-2 w-full pt-2 border-t border-slate-100">
-            {/* เลือกลักษณะการพิมพ์: แนวตั้ง (Portrait) / แนวนอน (Landscape) */}
-            <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-1 gap-1">
-              <button
-                type="button"
-                onClick={() => setOrientation('portrait')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                  !isLandscape
-                    ? 'bg-white text-emerald-700 shadow-xs border border-slate-200/60'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`}
-                title="พิมพ์แบบแนวตั้ง กระดาษ A4 (210 × 297 มม.) - ปรับความกว้างพอดีหน้ากระดาษ ไม่ล้นขอบ"
+          {/* แถวที่ 2: ตัวเลือกเลือกพิมพ์หอพัก + แผงควบคุมการพิมพ์ทั้งหมด */}
+          <div className="flex flex-wrap items-center justify-between gap-2 w-full pt-2 border-t border-slate-100">
+            {/* ตัวเลือกเลือกพิมพ์หอพัก */}
+            <div className="flex items-center gap-2 bg-emerald-50/70 border border-emerald-200 rounded-xl px-2.5 py-1">
+              <Building2 className="w-4 h-4 text-emerald-700 shrink-0" />
+              <label
+                htmlFor="print-dorm-select"
+                className="text-xs font-bold text-emerald-950 whitespace-nowrap"
               >
-                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="5" y="2" width="14" height="20" rx="2" />
-                </svg>
-                <span>แนวตั้ง (Portrait)</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setOrientation('landscape')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                  isLandscape
-                    ? 'bg-white text-emerald-700 shadow-xs border border-slate-200/60'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`}
-                title="พิมพ์แบบแนวนอน กระดาษ A4 (297 × 210 มม.)"
+                เลือกพิมพ์หอพัก:
+              </label>
+              <select
+                id="print-dorm-select"
+                value={printDormitory}
+                onChange={(e) => setPrintDormitory(e.target.value)}
+                className="bg-white border border-emerald-300 rounded-lg px-2.5 py-1 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 cursor-pointer max-w-[260px]"
               >
-                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="5" width="20" height="14" rx="2" />
-                </svg>
-                <span>แนวนอน (Landscape)</span>
-              </button>
+                <option value="ALL">
+                  ทุกหอพักรวมกัน ({sourceParcels.length} ชิ้น)
+                </option>
+                <option value={SEPARATE_BY_DORM_VALUE}>
+                  พิมพ์แยกทีละหอพัก (ทุกหอ · {sourceParcels.length} ชิ้น)
+                </option>
+                {dormitoryOptions.map((dormName) => {
+                  const count = dormCountMap.get(dormName) || 0;
+                  const theme = getDormitoryTheme(dormName);
+                  return (
+                    <option key={dormName} value={dormName}>
+                      {dormName} ({theme.basketCode}) · {count} ชิ้น
+                    </option>
+                  );
+                })}
+                {(dormCountMap.get('ยังไม่ระบุหอพัก') || 0) > 0 && (
+                  <option value="ยังไม่ระบุหอพัก">
+                    ยังไม่ระบุหอพัก · {dormCountMap.get('ยังไม่ระบุหอพัก')} ชิ้น
+                  </option>
+                )}
+              </select>
             </div>
 
-            {/* ความหนาแน่นตาราง: ประหยัดหน้า (กะทัดรัด) / ขนาดปกติ */}
-            <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-1 gap-1">
+            <div className="flex flex-wrap items-center justify-end gap-2 ml-auto">
+              {/* เลือกลักษณะการพิมพ์: แนวตั้ง / แนวนอน */}
+              <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-1 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setOrientation('portrait')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    !isLandscape
+                      ? 'bg-white text-emerald-700 shadow-xs border border-slate-200/60'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                  }`}
+                  title="พิมพ์แบบแนวตั้ง กระดาษ A4 (210 × 297 มม.)"
+                >
+                  <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="5" y="2" width="14" height="20" rx="2" />
+                  </svg>
+                  <span>แนวตั้ง (Portrait)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setOrientation('landscape')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    isLandscape
+                      ? 'bg-white text-emerald-700 shadow-xs border border-slate-200/60'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                  }`}
+                  title="พิมพ์แบบแนวนอน กระดาษ A4 (297 × 210 มม.)"
+                >
+                  <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="5" width="20" height="14" rx="2" />
+                  </svg>
+                  <span>แนวนอน (Landscape)</span>
+                </button>
+              </div>
+
+              {/* ความหนาแน่นตาราง */}
+              <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-1 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setDensity('compact')}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    density === 'compact'
+                      ? 'bg-white text-emerald-700 font-bold shadow-xs border border-slate-200/60'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                  }`}
+                  title="โหมดกะทัดรัด (แนะนำ): ประหยัดกระดาษ"
+                >
+                  ประหยัดหน้า (กะทัดรัด)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDensity('normal')}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    density === 'normal'
+                      ? 'bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                  }`}
+                  title="ระยะบรรทัดปกติ"
+                >
+                  ขนาดปกติ
+                </button>
+              </div>
+
+              {/* ปรับสัดส่วนการมองเห็น */}
+              <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl px-2 py-1 gap-1.5 text-xs text-slate-700">
+                <button
+                  type="button"
+                  onClick={() => setZoomLevel((z) => Math.max(50, z - 10))}
+                  disabled={zoomLevel <= 50}
+                  className="p-1 text-slate-500 hover:text-slate-800 disabled:opacity-40 cursor-pointer"
+                  title="ลดขนาดตัวอย่าง"
+                  aria-label="ลดขนาดตัวอย่าง"
+                >
+                  <ZoomOut className="w-3.5 h-3.5" />
+                </button>
+                <span className="font-mono font-bold w-16 text-center text-slate-800">ซูม {zoomLevel}%</span>
+                <button
+                  type="button"
+                  onClick={() => setZoomLevel((z) => Math.min(130, z + 10))}
+                  disabled={zoomLevel >= 130}
+                  className="p-1 text-slate-500 hover:text-slate-800 disabled:opacity-40 cursor-pointer"
+                  title="เพิ่มขนาดตัวอย่าง"
+                  aria-label="เพิ่มขนาดตัวอย่าง"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setZoomLevel(100)}
+                  className="px-1.5 py-0.5 text-[10px] bg-white hover:bg-slate-50 rounded text-slate-700 border border-slate-200 cursor-pointer ml-0.5 font-medium shadow-2xs"
+                  title="รีเซ็ตเป็น 100%"
+                >
+                  100%
+                </button>
+              </div>
+
+              {/* ปุ่มสั่งพิมพ์ */}
               <button
                 type="button"
-                onClick={() => setDensity('compact')}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                  density === 'compact'
-                    ? 'bg-white text-emerald-700 font-bold shadow-xs border border-slate-200/60'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`}
-                title="โหมดกะทัดรัด (แนะนำ): บรรจุได้ 25-30 รายการต่อหน้า ประหยัดกระดาษ"
+                onClick={handlePrint}
+                className="min-h-[36px] px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shadow-sm hover:shadow-emerald-600/20"
               >
-                ประหยัดหน้า (กะทัดรัด)
+                <Printer className="w-4 h-4" />
+                <span>สั่งพิมพ์ (Print A4)</span>
               </button>
+
+              {/* ปุ่มปิด */}
               <button
                 type="button"
-                onClick={() => setDensity('normal')}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                  density === 'normal'
-                    ? 'bg-white text-slate-900 font-bold shadow-xs border border-slate-200/60'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`}
-                title="ระยะบรรทัดปกติ"
+                onClick={onClose}
+                className="min-h-[36px] px-3.5 py-1.5 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-700 hover:text-slate-900 text-xs font-semibold rounded-xl border border-slate-300 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
               >
-                ขนาดปกติ
+                <X className="w-4 h-4" />
+                <span>ปิด</span>
               </button>
             </div>
-
-            {/* ปรับสัดส่วนการมองเห็น: ซูม 100% */}
-            <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl px-2 py-1 gap-1.5 text-xs text-slate-700">
-              <button
-                type="button"
-                onClick={() => setZoomLevel((z) => Math.max(50, z - 10))}
-                disabled={zoomLevel <= 50}
-                className="p-1 text-slate-500 hover:text-slate-800 disabled:opacity-40 cursor-pointer"
-                title="ลดขนาดตัวอย่าง"
-                aria-label="ลดขนาดตัวอย่าง"
-              >
-                <ZoomOut className="w-3.5 h-3.5" />
-              </button>
-              <span className="font-mono font-bold w-16 text-center text-slate-800">ซูม {zoomLevel}%</span>
-              <button
-                type="button"
-                onClick={() => setZoomLevel((z) => Math.min(130, z + 10))}
-                disabled={zoomLevel >= 130}
-                className="p-1 text-slate-500 hover:text-slate-800 disabled:opacity-40 cursor-pointer"
-                title="เพิ่มขนาดตัวอย่าง"
-                aria-label="เพิ่มขนาดตัวอย่าง"
-              >
-                <ZoomIn className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setZoomLevel(100)}
-                className="px-1.5 py-0.5 text-[10px] bg-white hover:bg-slate-50 rounded text-slate-700 border border-slate-200 cursor-pointer ml-0.5 font-medium shadow-2xs"
-                title="รีเซ็ตเป็น 100%"
-              >
-                100%
-              </button>
-            </div>
-
-            {/* ปุ่มกดสั่งพิมพ์: สั่งพิมพ์ (Print A4) */}
-            <button
-              type="button"
-              onClick={handlePrint}
-              className="min-h-[36px] px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shadow-sm hover:shadow-emerald-600/20"
-            >
-              <Printer className="w-4 h-4" />
-              <span>สั่งพิมพ์ (Print A4)</span>
-            </button>
-
-            {/* ปุ่มปิด */}
-            <button
-              type="button"
-              onClick={onClose}
-              className="min-h-[36px] px-3.5 py-1.5 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-700 hover:text-slate-900 text-xs font-semibold rounded-xl border border-slate-300 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
-            >
-              <X className="w-4 h-4" />
-              <span>ปิด</span>
-            </button>
           </div>
         </div>
       </header>
 
-      {/* พื้นที่แสดงตัวอย่างเอกสาร A4 (Interactive Canvas) พื้นหลังสีขาวล้วน */}
-      <main className="flex-1 overflow-y-auto print-preview-scroll-area p-3 sm:p-5 lg:p-7 flex justify-center items-start bg-white">
+      {/* พื้นที่แสดงตัวอย่างเอกสาร A4 แยกทีละหน้า พร้อมหัวกระดาษซ้ำและเลขหน้าที่มุมบนขวา-ล่างขวาทุกหน้า */}
+      <main className="flex-1 overflow-auto print-preview-scroll-area p-4 sm:p-6 lg:p-8 flex justify-center items-start bg-slate-100">
         <div
           style={{
             transform: zoomLevel !== 100 ? `scale(${zoomLevel / 100})` : undefined,
             transformOrigin: 'top center',
-            transition: 'transform 0.15s ease-out, max-width 0.2s ease',
+            transition: 'transform 0.15s ease-out',
           }}
-          className={`manifest-a4-sheet bg-white text-slate-900 shadow-2xl rounded-sm p-4 sm:p-6 border border-slate-300 w-full box-border ${
-            isLandscape ? 'max-w-[1123px]' : 'max-w-[794px]'
-          }`}
+          className="manifest-pages-stack flex flex-col items-center gap-6"
         >
-          {/* Header เอกสาร: กระชับ สะอาด ประหยัดเนื้อที่หัวกระดาษ */}
-          <header className="border-b-2 border-slate-900 pb-2 mb-2.5 flex flex-row items-center justify-between gap-3">
-            <div className="space-y-0.5">
-              <h1 className="text-base sm:text-lg font-extrabold text-slate-900 tracking-tight leading-snug">
-                ใบรายการนำส่งและลงนามรับพัสดุนักเรียนประจำหอพัก
-              </h1>
-              <div className="flex flex-wrap items-center gap-2.5 text-[11px] text-slate-600 font-mono">
-                <span>วันที่พิมพ์: <strong className="text-slate-900">{printDateDisplay}</strong></span>
-                {selectedDate && (
-                  <span>· รับเข้า: <strong className="text-slate-900">{formatThaiSlashDate(selectedDate)}</strong></span>
-                )}
-                {selectedStatusLabel && (
-                  <span>· ตัวกรอง: <strong className="text-slate-900">{selectedStatusLabel}</strong></span>
-                )}
-                {selectedSortLabel && (
-                  <span>· เรียงตาม: <strong className="text-slate-900">{selectedSortLabel}</strong></span>
-                )}
-                <span>· รวมทั้งหมด <strong className="text-slate-900">{parcels.length}</strong> รายการ</span>
-                <span>(เซ็นแล้ว {signedCount} / รอเซ็น {unsignedCount}{infirmaryCount > 0 ? `, งานพยาบาล ${infirmaryCount}` : ''}{legalHoldCount > 0 ? `, ติดนิติการ ${legalHoldCount}` : ''})</span>
-              </div>
-            </div>
+          {resolvedPages.map(({ group, chunk, pageNumber, totalPages, pageKey }) => {
+            const signedCount = group.parcels.filter((p) => p.status === 'ส่งมอบสำเร็จ').length;
+            const unsignedCount = group.parcels.length - signedCount;
+            const legalHoldCount = group.parcels.filter((p) => p.status === 'ติดนิติการ').length;
+            const colSpan = isLandscape ? 8 : 7;
 
-            {/* ป้ายแสดงหอพักและรหัสตะกร้าสี (ใส่สีตะกร้าหอพัก) */}
-            <div
-              className={`dorm-basket-badge border-2 ${activeTheme.borderClass} ${activeTheme.bgClass} rounded-lg px-2.5 py-1 text-right shrink-0 shadow-2xs`}
-              style={{
-                borderColor: activeTheme.hexColor || undefined,
-                WebkitPrintColorAdjust: 'exact',
-                printColorAdjust: 'exact',
-              }}
-            >
-              <div className={`text-xs sm:text-sm font-extrabold leading-tight ${activeTheme.textClass}`}>
-                {dormitory === 'ALL' ? 'ทุกหอพักรวม' : activeTheme.name}
-              </div>
-              <div className="text-[10px] font-mono font-bold text-slate-800 flex items-center justify-end gap-1.5 mt-0.5">
-                <span
-                  className="inline-block w-2.5 h-2.5 rounded-full border border-slate-900/20 shrink-0"
-                  style={{
-                    backgroundColor: activeTheme.hexColor,
-                    WebkitPrintColorAdjust: 'exact',
-                    printColorAdjust: 'exact',
-                  }}
-                />
-                <span>
-                  {activeTheme.basketCode} ({activeTheme.colorName})
-                </span>
-              </div>
-            </div>
-          </header>
+            return (
+              <section
+                key={pageKey}
+                aria-label={`ใบนำส่ง ${group.dormitory === 'ALL' ? 'ทุกหอพักรวม' : group.theme.name} หน้าที่ ${pageNumber} จาก ${totalPages}`}
+                className={`manifest-a4-page bg-white text-slate-900 shadow-xl rounded-sm p-[22px] border border-slate-300 flex flex-col box-border shrink-0 ${
+                  isLandscape
+                    ? 'w-[1123px] min-h-[794px]'
+                    : 'w-[794px] min-h-[1123px]'
+                }`}
+              >
+                {/* แถวบนสุด: เลขหน้าที่ มุมบนขวาของกระดาษ */}
+                <div className="flex items-center justify-between gap-2 mb-1 text-[10px] font-mono shrink-0">
+                  <span className="text-[9.5px] text-slate-500 truncate">
+                    {group.dormitory === 'ALL'
+                      ? 'ใบนำส่งรวมทุกหอพัก'
+                      : `${group.theme.name} (${group.theme.basketCode})`}
+                  </span>
+                  <span className="font-bold text-slate-900 tabular-nums shrink-0 print-page-number">
+                    หน้าที่ {pageNumber} / {totalPages}
+                  </span>
+                </div>
 
-          {/* ตารางรายการพัสดุสำหรับพิมพ์: กำหนด table-layout: fixed และคำนวณ % กว้างรวม 100% พอดีหน้ากระดาษ A4 ไม่ล้นขอบ */}
-          <div className="w-full overflow-hidden">
-            {isLandscape ? (
-              /* =================== มุมมองแนวนอน (A4 Landscape Layout: 100% Width) =================== */
-              <table className="w-full table-fixed border-collapse text-left border border-slate-400 bg-white">
-                <thead className="table-header-group border-y-2 border-slate-900 bg-slate-100 text-slate-900 font-bold text-[10.5px]">
-                  <tr className="border-y-2 border-slate-900 bg-slate-100">
-                    <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[4%] bg-slate-100 font-bold text-slate-900">ลำดับ</th>
-                    <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[18%] bg-slate-100 font-bold text-slate-900">เลขพัสดุ (Tracking)</th>
-                    <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[11%] bg-slate-100 font-bold text-slate-900">ขนส่ง</th>
-                    <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[9%] bg-slate-100 font-bold text-slate-900">รหัส นร.</th>
-                    <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[20%] bg-slate-100 font-bold text-slate-900">
-                      ชื่อ-นามสกุลนักเรียน
-                    </th>
-                    <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[19%] bg-slate-100 font-bold text-slate-900">ประเภทสิ่งของ</th>
-                    <th className="py-2 px-1.5 border border-slate-400 text-center align-middle w-[12%] bg-slate-100 font-bold text-slate-900">
-                      ลายมือชื่อผู้รับ
-                    </th>
-                    <th className="py-2 px-1.5 border border-slate-400 text-center align-middle w-[7%] bg-slate-100 font-bold text-slate-900">
-                      วันที่รับ
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="table-row-group text-[10.5px]">
-                  {parcels.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="py-8 text-center text-slate-500 border border-slate-300">
-                        ไม่มีรายการพัสดุที่ตรงกับเงื่อนไขในขณะนี้
-                      </td>
-                    </tr>
-                  ) : (
-                    parcels.map((p, idx) => {
-                      const isSigned = p.status === 'ส่งมอบสำเร็จ';
-                      const isLegalHold = p.status === 'ติดนิติการ';
-                      const isInfirmary = p.status === 'ติดต่องานพยาบาล';
-                      const isGreenTracking = isGreenHighlightTrackingNumber(p.trackingNumber, p);
-                      const isRdCategory = Boolean(p.category?.trim().toUpperCase().endsWith('-RD'));
-                      const cellPy = density === 'compact' ? 'py-1' : 'py-1.5';
-                      const recordedDate = isSigned
-                        ? formatThaiSlashDate(p.deliveredDate || p.receivedDate || p.updatedAt)
-                        : '';
+                {/* หัวกระดาษ (พิมพ์ซ้ำทุกหน้า) */}
+                {renderDocumentHeader(group)}
 
-                      return (
-                        <tr
-                          key={p.id}
-                          style={
-                            isLegalHold
-                              ? { backgroundColor: '#FEF1F0', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }
-                              : isInfirmary
-                              ? { backgroundColor: '#FFFBEB', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }
-                              : undefined
-                          }
-                          className={`border-b break-inside-avoid ${
-                            isLegalHold
-                              ? 'bg-[#FEF1F0] text-rose-950 font-medium border-rose-300 print-highlight-legal print:bg-[#FEF1F0]'
-                              : isInfirmary
-                              ? 'bg-amber-50/70 text-amber-950 font-medium border-amber-300 print-highlight-infirmary print:bg-[#FFFBEB]'
-                              : 'bg-white border-slate-300'
-                          }`}
-                        >
-                          <td className={`${cellPy} px-1 border border-slate-300 text-center font-mono font-semibold tabular-nums text-slate-700`}>
-                            {idx + 1}
-                          </td>
-                          <td
-                            className={`${cellPy} px-2 border border-slate-300 font-mono font-bold tabular-nums truncate`}
-                          >
-                            <div
-                              style={{
-                                color: isLegalHold ? '#DC2626' : isGreenTracking ? '#166534' : '#000000',
-                                WebkitPrintColorAdjust: 'exact',
-                                printColorAdjust: 'exact',
-                              }}
-                              className={`font-mono font-bold tabular-nums truncate font-extrabold ${
-                                isLegalHold
-                                  ? 'text-red-600 font-black print-legal-tracking'
-                                  : isGreenTracking
-                                  ? 'text-emerald-800 font-black print-green-tracking'
-                                  : 'text-slate-900 print-black-tracking'
-                              }`}
-                            >
-                              {p.trackingNumber}
-                            </div>
-                          </td>
-                          <td className={`${cellPy} px-2 border border-slate-300 text-slate-700 truncate`}>
-                            {p.courier}
-                          </td>
-                          <td className={`${cellPy} px-1 border border-slate-300 text-center font-mono font-semibold text-slate-900 tabular-nums`}>
-                            {formatStudentCode(p.studentCode)}
-                          </td>
-                          {/* ชื่อ-นามสกุลนักเรียน พร้อมบรรทัดที่ 2 แสดงจำนวนพัสดุ วันนี้ ชิ้น ,สัปดาห์นี้ ชิ้น ,เดือนนี้ ชิ้น ,ทั้งหมด ชิ้น */}
-                          <td className={`${cellPy} px-2 border border-slate-300 leading-tight`}>
-                            <div className="font-bold text-slate-900 truncate">
-                              <span>{p.studentFullName}</span>
-                              {p.nickname && <span className="text-slate-600 font-normal ml-1">({p.nickname})</span>}
-                              {p.gradeRoom && <span className="text-slate-500 font-normal text-[10px] ml-1.5">ชั้น {p.gradeRoom}</span>}
-                            </div>
-                            {studentParcelSummaryMap.get(p.id) && (
-                              <div
-                                style={{ color: '#166534', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
-                                className="text-[8.5px] font-mono text-emerald-800 font-semibold leading-tight mt-0.5 truncate print-student-parcel-summary"
-                              >
-                                {studentParcelSummaryMap.get(p.id)!.displayText}
-                              </div>
-                            )}
-                          </td>
-                          {/* ประเภทสิ่งของ พร้อมวันเวลาลงทะเบียนทุกประเภท และสถานะติดนิติการ/งานพยาบาล */}
-                          <td className={`${cellPy} px-2 border border-slate-300 leading-tight`}>
-                            <div
-                              style={isRdCategory ? { color: '#DC2626', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : undefined}
-                              className={`font-semibold truncate ${
-                                isRdCategory ? 'text-red-600 print-rd-category font-bold' : 'text-slate-800'
-                              }`}
-                            >
-                              {p.category}
-                            </div>
-                            <div className="text-[9px] sm:text-[9.5px] leading-tight mt-0.5">
-                              <span
-                                style={{ color: '#166534', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
-                                className="font-bold text-emerald-800 print-reg-date-time font-mono"
-                              >
-                                {formatParcelRegistrationDateTime(p)}
-                              </span>
-                              {isLegalHold && (
-                                <span
-                                  style={{ color: '#DC2626', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
-                                  className="font-bold text-red-700 print-legal-tag ml-1"
-                                >
-                                  [ติดนิติการ{p.note && p.note.trim() && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' ? `: ${p.note.trim()}` : ''}]
-                                </span>
-                              )}
-                              {isInfirmary && (
-                                <span className="font-bold text-amber-800 ml-1">
-                                  [ติดต่องานพยาบาล]
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          {/* ลายมือชื่อผู้รับ: ขยายเป็น 12% */}
-                          <td className={`${cellPy} px-1 border border-slate-300 text-center`}>
-                            {isSigned ? (
-                              <div className="text-emerald-700 font-bold text-[9.5px] text-center leading-tight">
-                                เซ็นรับแล้ว
-                              </div>
-                            ) : (
-                              <div className="w-16 mx-auto pt-2.5 border-b border-dotted border-slate-400 text-[8px] text-slate-400 text-center">
-                                ลงชื่อ
-                              </div>
-                            )}
-                          </td>
-                          {/* วันที่รับ: ใช้ฟอนต์และสไตล์แบบเดียวกับคอลัมน์ลายมือชื่อผู้รับ */}
-                          <td className={`${cellPy} px-1 border border-slate-300 text-center`}>
-                            {isSigned ? (
-                              <div className="text-emerald-700 font-bold text-[9.5px] text-center leading-tight">
-                                {recordedDate}
-                              </div>
-                            ) : (
-                              <div className="w-12 mx-auto pt-2.5 border-b border-dotted border-slate-400 text-[8px] text-slate-400 text-center">
-                                ว/ด/ป
-                              </div>
-                            )}
+                {/* ตารางรายการพัสดุสำหรับหน้านี้ */}
+                <div className="w-full overflow-hidden">
+                  <table className="w-full table-fixed border-collapse text-left border border-slate-400 bg-white">
+                    {renderTableHeader()}
+                    <tbody className={isLandscape ? 'table-row-group text-[10.5px]' : 'table-row-group text-[10px]'}>
+                      {chunk.parcels.length === 0 ? (
+                        <tr>
+                          <td colSpan={colSpan} className="py-8 text-center text-slate-500 border border-slate-300">
+                            ไม่มีรายการพัสดุที่ตรงกับเงื่อนไขในขณะนี้
                           </td>
                         </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            ) : (
-              /* =================== มุมมองแนวตั้ง (A4 Portrait Layout: 100% Width Perfectly Fit) =================== */
-              <table className="w-full table-fixed border-collapse text-left border border-slate-400 bg-white">
-                <thead className="table-header-group border-y-2 border-slate-900 bg-slate-100 text-slate-900 font-bold text-[10px]">
-                  <tr className="border-y-2 border-slate-900 bg-slate-100">
-                    <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[5%] bg-slate-100 font-bold text-slate-900">ลำดับ</th>
-                    <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[16%] bg-slate-100 font-bold text-slate-900">เลขพัสดุ / ขนส่ง</th>
-                    <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[9%] bg-slate-100 font-bold text-slate-900">รหัส นร.</th>
-                    <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[21%] bg-slate-100 font-bold text-slate-900">
-                      ชื่อ-นามสกุลนักเรียน
-                    </th>
-                    <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[27%] bg-slate-100 font-bold text-slate-900">ประเภทสิ่งของ</th>
-                    <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[12%] bg-slate-100 font-bold text-slate-900">
-                      ลายมือชื่อผู้รับ
-                    </th>
-                    <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[10%] bg-slate-100 font-bold text-slate-900">
-                      วันที่รับ
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="table-row-group text-[10px]">
-                  {parcels.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="py-8 text-center text-slate-500 border border-slate-300">
-                        ไม่มีรายการพัสดุที่ตรงกับเงื่อนไขในขณะนี้
-                      </td>
-                    </tr>
-                  ) : (
-                    parcels.map((p, idx) => {
-                      const isSigned = p.status === 'ส่งมอบสำเร็จ';
-                      const isLegalHold = p.status === 'ติดนิติการ';
-                      const isInfirmary = p.status === 'ติดต่องานพยาบาล';
-                      const isGreenTracking = isGreenHighlightTrackingNumber(p.trackingNumber, p);
-                      const isRdCategory = Boolean(p.category?.trim().toUpperCase().endsWith('-RD'));
-                      const cellPy = density === 'compact' ? 'py-1' : 'py-1.5';
-                      const recordedDate = isSigned
-                        ? formatThaiSlashDate(p.deliveredDate || p.receivedDate || p.updatedAt)
-                        : '';
+                      ) : (
+                        chunk.parcels.map((p, idxInPage) =>
+                          renderParcelRow(
+                            p,
+                            chunk.startIndex + idxInPage + 1,
+                            `${pageKey}::${p.id}::${idxInPage}`
+                          )
+                        )
+                      )}
+                    </tbody>
+                  </table>
+                </div>
 
-                      return (
-                        <tr
-                          key={p.id}
-                          style={
-                            isLegalHold
-                              ? { backgroundColor: '#FEF1F0', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }
-                              : isInfirmary
-                              ? { backgroundColor: '#FFFBEB', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }
-                              : undefined
-                          }
-                          className={`border-b break-inside-avoid ${
-                            isLegalHold
-                              ? 'bg-[#FEF1F0] text-rose-950 font-medium border-rose-300 print-highlight-legal print:bg-[#FEF1F0]'
-                              : isInfirmary
-                              ? 'bg-amber-50/70 text-amber-950 font-medium border-amber-300 print-highlight-infirmary print:bg-[#FFFBEB]'
-                              : 'bg-white border-slate-300'
-                          }`}
-                        >
-                          <td className={`${cellPy} px-1 border border-slate-300 text-center font-mono font-semibold tabular-nums text-slate-700`}>
-                            {idx + 1}
-                          </td>
-                          <td className={`${cellPy} px-2 border border-slate-300 leading-tight`}>
-                            <div
-                              style={{
-                                color: isLegalHold ? '#DC2626' : isGreenTracking ? '#166534' : '#000000',
-                                WebkitPrintColorAdjust: 'exact',
-                                printColorAdjust: 'exact',
-                              }}
-                              className={`font-mono font-bold tabular-nums truncate font-extrabold ${
-                                isLegalHold
-                                  ? 'text-red-600 font-black print-legal-tracking'
-                                  : isGreenTracking
-                                  ? 'text-emerald-800 font-black print-green-tracking'
-                                  : 'text-slate-900 print-black-tracking'
-                              }`}
-                            >
-                              {p.trackingNumber}
-                            </div>
-                            <div className="text-[9px] text-slate-500 truncate">{p.courier}</div>
-                          </td>
-                          <td className={`${cellPy} px-1 border border-slate-300 text-center font-mono font-semibold text-slate-900 tabular-nums`}>
-                            {formatStudentCode(p.studentCode)}
-                          </td>
-                          {/* ชื่อ-นามสกุลนักเรียน พร้อมบรรทัดที่ 2 แสดงจำนวนพัสดุ วันนี้ ชิ้น ,สัปดาห์นี้ ชิ้น ,เดือนนี้ ชิ้น ,ทั้งหมด ชิ้น */}
-                          <td className={`${cellPy} px-2 border border-slate-300 leading-tight`} title={`${p.studentFullName} ${p.nickname ? `(${p.nickname})` : ''} ชั้น ${p.gradeRoom}`}>
-                            <div className="font-bold text-slate-900 truncate">
-                              <span>{p.studentFullName}</span>
-                              {p.nickname && <span className="text-slate-600 font-normal ml-1">({p.nickname})</span>}
-                              {p.gradeRoom && <span className="text-slate-500 font-normal text-[9.5px] ml-1">ชั้น {p.gradeRoom}</span>}
-                            </div>
-                            {studentParcelSummaryMap.get(p.id) && (
-                              <div
-                                style={{ color: '#166534', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
-                                className="text-[8px] sm:text-[8.5px] font-mono text-emerald-800 font-semibold leading-tight mt-0.5 truncate print-student-parcel-summary"
-                              >
-                                {studentParcelSummaryMap.get(p.id)!.displayText}
-                              </div>
-                            )}
-                          </td>
-                          {/* ประเภทสิ่งของ พร้อมวันเวลาลงทะเบียนทุกประเภท และสถานะติดนิติการ/งานพยาบาล */}
-                          <td className={`${cellPy} px-2 border border-slate-300 leading-tight`}>
-                            <div
-                              style={isRdCategory ? { color: '#DC2626', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } : undefined}
-                              className={`font-semibold truncate ${
-                                isRdCategory ? 'text-red-600 print-rd-category font-bold' : 'text-slate-800'
-                              }`}
-                            >
-                              {p.category}
-                            </div>
-                            <div className="text-[8.5px] sm:text-[9.5px] leading-tight mt-0.5">
-                              <span
-                                style={{ color: '#166534', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
-                                className="font-bold text-emerald-800 print-reg-date-time font-mono"
-                              >
-                                {formatParcelRegistrationDateTime(p)}
-                              </span>
-                              {isLegalHold && (
-                                <span
-                                  style={{ color: '#DC2626', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}
-                                  className="font-bold text-red-700 print-legal-tag ml-1"
-                                >
-                                  [ติดนิติการ{p.note && p.note.trim() && p.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' ? `: ${p.note.trim()}` : ''}]
-                                </span>
-                              )}
-                              {isInfirmary && (
-                                <span className="font-bold text-amber-800 ml-1">
-                                  [ติดต่องานพยาบาล]
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          {/* ลายมือชื่อผู้รับ: 12% */}
-                          <td className={`${cellPy} px-1 border border-slate-300 text-center`}>
-                            {isSigned ? (
-                              <div className="text-emerald-700 font-bold text-[9.5px] text-center leading-tight">
-                                เซ็นรับแล้ว
-                              </div>
-                            ) : (
-                              <div className="w-16 mx-auto pt-2 border-b border-dotted border-slate-400 text-[8px] text-slate-400 text-center">
-                                ลงชื่อ
-                              </div>
-                            )}
-                          </td>
-                          {/* วันที่รับ: 10% ใช้ฟอนต์และรูปแบบเดียวกับคอลัมน์ลายมือชื่อผู้รับ */}
-                          <td className={`${cellPy} px-1 border border-slate-300 text-center`}>
-                            {isSigned ? (
-                              <div className="text-emerald-700 font-bold text-[9.5px] text-center leading-tight">
-                                {recordedDate}
-                              </div>
-                            ) : (
-                              <div className="w-14 mx-auto pt-2 border-b border-dotted border-slate-400 text-[8px] text-slate-400 text-center">
-                                ว/ด/ป
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {/* สรุปข้อมูลยอดรวมท้ายตาราง (กะทัดรัด ประหยัดเนื้อที่ ไม่ล้นหน้า) */}
-          <div className="mt-2 pt-1.5 border-t border-slate-300 flex flex-wrap items-center justify-between text-[10px] text-slate-600 font-mono gap-2">
-            <div>
-              รวมทั้งสิ้น <strong>{parcels.length}</strong> รายการ (ส่งมอบแล้ว {signedCount} / รอส่งมอบ {unsignedCount}{legalHoldCount > 0 ? ` / ติดนิติการ ${legalHoldCount}` : ''})
-            </div>
-            <div className="text-[9.5px] text-slate-500 font-sans">
-              * เลขพัสดุ: <span className="font-bold text-slate-900">สีดำ</span> = บาร์โค้ดปกติ · <span className="font-bold text-emerald-800">สีเขียวเข้ม</span> = ขึ้นต้นด้วย &quot;PRT&quot; และเลขพัสดุที่ทำการสุ่มด้วยระบบ · <span className="font-bold text-red-600">สีแดง</span> = พัสดุติดนิติการ
-            </div>
-          </div>
+                {/* ท้ายกระดาษ: สรุปข้อมูล + เลขหน้าที่ มุมล่างขวาของกระดาษ */}
+                <footer className="mt-auto pt-1.5 border-t border-slate-300 flex items-end justify-between gap-3 text-[10px] text-slate-600 shrink-0">
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="font-mono">
+                      รวมทั้งสิ้น <strong>{group.parcels.length}</strong> รายการ (ส่งมอบแล้ว {signedCount} / รอส่งมอบ {unsignedCount}
+                      {legalHoldCount > 0 ? ` / ติดนิติการ ${legalHoldCount}` : ''})
+                      {totalPages > 1 && chunk.parcels.length > 0 && (
+                        <span className="ml-1.5 text-slate-500">
+                          · หน้านี้ลำดับที่ {chunk.startIndex + 1}–{chunk.startIndex + chunk.parcels.length}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[9px] text-slate-500 font-sans">
+                      * เลขพัสดุ: <span className="font-bold text-slate-900">สีดำ</span> = บาร์โค้ดปกติ ·{' '}
+                      <span className="font-bold text-emerald-800">สีเขียวเข้ม</span> = ขึ้นต้นด้วย &quot;PRT&quot; และเลขพัสดุที่ทำการสุ่มด้วยระบบ ·{' '}
+                      <span className="font-bold text-red-600">สีแดง</span> = พัสดุติดนิติการ
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-right font-mono font-bold text-[10.5px] text-slate-900 tabular-nums print-page-number">
+                    หน้าที่ {pageNumber} / {totalPages}
+                  </div>
+                </footer>
+              </section>
+            );
+          })}
         </div>
       </main>
     </div>
