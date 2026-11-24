@@ -23,7 +23,8 @@
 /* รูปแบบสำหรับการสั่งพิมพ์ใบรายการนำส่งพัสดุ (Printable Manifest A4) */
 @media print {
   @page {
-    margin: 6mm 6mm 6mm 6mm;
+    size: A4 portrait;
+    margin: 5mm 6mm;
   }
 
   /* 1. พื้นหลังหน้ากระดาษและเอกสารภายนอกเป็นสีขาว */

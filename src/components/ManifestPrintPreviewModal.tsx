@@ -51,13 +51,13 @@ interface PageChunk {
 
 const SEPARATE_BY_DORM_VALUE = 'SEPARATE_BY_DORM';
 
-// A4 printable area at 96dpi minus 6mm margins on each side and safety buffer:
-// Portrait: 210mm x 297mm -> 198mm x 274mm (~748px x 1030px usable)
-// Landscape: 297mm x 210mm -> 285mm x 188mm (~1077px x 706px usable)
+// A4 printable area at 96dpi with 5mm top/bottom and 6mm left/right margins:
+// Portrait: 210mm x 297mm -> 198mm x 287mm (~748px x 1085px usable, 1078px safe)
+// Landscape: 297mm x 210mm -> 285mm x 200mm (~1077px x 756px usable, 749px safe)
 const PRINT_WIDTH_PX_PORTRAIT = 748;
 const PRINT_WIDTH_PX_LANDSCAPE = 1077;
-const PRINT_HEIGHT_PX_PORTRAIT = 1030;
-const PRINT_HEIGHT_PX_LANDSCAPE = 706;
+const PRINT_HEIGHT_PX_PORTRAIT = 1078;
+const PRINT_HEIGHT_PX_LANDSCAPE = 749;
 
 function buildFallbackChunks(parcels: Parcel[], perPage: number): PageChunk[] {
   if (parcels.length === 0) {
@@ -208,11 +208,9 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
     const printableHeight = isLandscape ? PRINT_HEIGHT_PX_LANDSCAPE : PRINT_HEIGHT_PX_PORTRAIT;
     const topBarEl = root.querySelector('[data-measure="top-bar"]') as HTMLElement | null;
     const theadEl = root.querySelector('[data-measure="thead"]') as HTMLElement | null;
-    const footerEl = root.querySelector('[data-measure="footer"]') as HTMLElement | null;
 
     const topBarHeight = topBarEl ? topBarEl.getBoundingClientRect().height + 4 : 22;
-    const theadHeight = theadEl ? theadEl.getBoundingClientRect().height : 32;
-    const footerHeight = footerEl ? footerEl.getBoundingClientRect().height + 10 : 48;
+    const theadHeight = theadEl ? theadEl.getBoundingClientRect().height : 30;
 
     const nextMap: Record<string, PageChunk[]> = {};
 
@@ -220,12 +218,12 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
       const headerEl = root.querySelector(
         `[data-measure-header="${CSS.escape(group.key)}"]`
       ) as HTMLElement | null;
-      const headerHeight = headerEl ? headerEl.getBoundingClientRect().height + 8 : 66;
+      const headerHeight = headerEl ? headerEl.getBoundingClientRect().height + 6 : 60;
 
-      // เว้นระยะเผื่อ 22px ป้องกันเส้นขอบหรือการปัดเศษของเบราว์เซอร์ดันขึ้นหน้าใหม่โดยไม่ตั้งใจ
+      // เว้นระยะเผื่อ 6px ป้องกันการปัดเศษของเบราว์เซอร์ดันขึ้นหน้าใหม่โดยไม่ตั้งใจ
       const availableBodyHeight = Math.max(
         140,
-        printableHeight - topBarHeight - headerHeight - theadHeight - footerHeight - 22
+        printableHeight - topBarHeight - headerHeight - theadHeight - 6
       );
 
       if (group.parcels.length === 0) {
@@ -330,11 +328,11 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
 
   const fallbackPerPage = isLandscape
     ? density === 'compact'
-      ? 16
-      : 13
+      ? 18
+      : 15
     : density === 'compact'
-    ? 25
-    : 20;
+    ? 27
+    : 22;
 
   const resolvedPages = manifestGroups.flatMap((group) => {
     const chunks =
@@ -372,18 +370,18 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
         className="table-header-group border-y-2 border-slate-900 bg-slate-100 text-slate-900 font-bold text-[10.5px]"
       >
         <tr className="border-y-2 border-slate-900 bg-slate-100">
-          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[4%] bg-slate-100 font-bold text-slate-900">ลำดับ</th>
-          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[18%] bg-slate-100 font-bold text-slate-900">เลขพัสดุ (Tracking)</th>
-          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[11%] bg-slate-100 font-bold text-slate-900">ขนส่ง</th>
-          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[9%] bg-slate-100 font-bold text-slate-900">รหัส นร.</th>
-          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[20%] bg-slate-100 font-bold text-slate-900">
+          <th className="py-1.5 px-1 border border-slate-400 text-center align-middle w-[4%] bg-slate-100 font-bold text-slate-900">ลำดับ</th>
+          <th className="py-1.5 px-2 border border-slate-400 text-center align-middle w-[18%] bg-slate-100 font-bold text-slate-900">เลขพัสดุ (Tracking)</th>
+          <th className="py-1.5 px-2 border border-slate-400 text-center align-middle w-[11%] bg-slate-100 font-bold text-slate-900">ขนส่ง</th>
+          <th className="py-1.5 px-1 border border-slate-400 text-center align-middle w-[9%] bg-slate-100 font-bold text-slate-900">รหัส นร.</th>
+          <th className="py-1.5 px-2 border border-slate-400 text-center align-middle w-[20%] bg-slate-100 font-bold text-slate-900">
             ชื่อ-นามสกุลนักเรียน
           </th>
-          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[19%] bg-slate-100 font-bold text-slate-900">ประเภทสิ่งของ</th>
-          <th className="py-2 px-1.5 border border-slate-400 text-center align-middle w-[12%] bg-slate-100 font-bold text-slate-900">
+          <th className="py-1.5 px-2 border border-slate-400 text-center align-middle w-[19%] bg-slate-100 font-bold text-slate-900">ประเภทสิ่งของ</th>
+          <th className="py-1.5 px-1.5 border border-slate-400 text-center align-middle w-[12%] bg-slate-100 font-bold text-slate-900">
             ลายมือชื่อผู้รับ
           </th>
-          <th className="py-2 px-1.5 border border-slate-400 text-center align-middle w-[7%] bg-slate-100 font-bold text-slate-900">
+          <th className="py-1.5 px-1.5 border border-slate-400 text-center align-middle w-[7%] bg-slate-100 font-bold text-slate-900">
             วันที่รับ
           </th>
         </tr>
@@ -394,17 +392,17 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
         className="table-header-group border-y-2 border-slate-900 bg-slate-100 text-slate-900 font-bold text-[10px]"
       >
         <tr className="border-y-2 border-slate-900 bg-slate-100">
-          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[5%] bg-slate-100 font-bold text-slate-900">ลำดับ</th>
-          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[16%] bg-slate-100 font-bold text-slate-900">เลขพัสดุ / ขนส่ง</th>
-          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[9%] bg-slate-100 font-bold text-slate-900">รหัส นร.</th>
-          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[21%] bg-slate-100 font-bold text-slate-900">
+          <th className="py-1.5 px-1 border border-slate-400 text-center align-middle w-[5%] bg-slate-100 font-bold text-slate-900">ลำดับ</th>
+          <th className="py-1.5 px-2 border border-slate-400 text-center align-middle w-[16%] bg-slate-100 font-bold text-slate-900">เลขพัสดุ / ขนส่ง</th>
+          <th className="py-1.5 px-1 border border-slate-400 text-center align-middle w-[9%] bg-slate-100 font-bold text-slate-900">รหัส นร.</th>
+          <th className="py-1.5 px-2 border border-slate-400 text-center align-middle w-[21%] bg-slate-100 font-bold text-slate-900">
             ชื่อ-นามสกุลนักเรียน
           </th>
-          <th className="py-2 px-2 border border-slate-400 text-center align-middle w-[27%] bg-slate-100 font-bold text-slate-900">ประเภทสิ่งของ</th>
-          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[12%] bg-slate-100 font-bold text-slate-900">
+          <th className="py-1.5 px-2 border border-slate-400 text-center align-middle w-[27%] bg-slate-100 font-bold text-slate-900">ประเภทสิ่งของ</th>
+          <th className="py-1.5 px-1 border border-slate-400 text-center align-middle w-[12%] bg-slate-100 font-bold text-slate-900">
             ลายมือชื่อผู้รับ
           </th>
-          <th className="py-2 px-1 border border-slate-400 text-center align-middle w-[10%] bg-slate-100 font-bold text-slate-900">
+          <th className="py-1.5 px-1 border border-slate-400 text-center align-middle w-[10%] bg-slate-100 font-bold text-slate-900">
             วันที่รับ
           </th>
         </tr>
@@ -649,7 +647,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
     const infirmaryCount = group.parcels.filter((p) => p.status === 'ติดต่องานพยาบาล').length;
 
     return (
-      <header className="border-b-2 border-slate-900 pb-2 mb-2 flex flex-row items-center justify-between gap-3 shrink-0">
+      <header className="border-b-2 border-slate-900 pb-1.5 mb-1.5 flex flex-row items-center justify-between gap-3 shrink-0">
         <div className="space-y-0.5 min-w-0">
           <h1 className="text-base sm:text-[17px] font-extrabold text-slate-900 tracking-tight leading-snug">
             ใบรายการนำส่งและลงนามรับพัสดุนักเรียนประจำหอพัก
@@ -716,7 +714,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
         @media print {
           @page {
             size: A4 ${orientation};
-            margin: 6mm;
+            margin: 5mm 6mm;
           }
           html, body {
             background-color: #FFFFFF !important;
@@ -766,9 +764,9 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             margin: 0 !important;
             width: 100% !important;
             max-width: 100% !important;
-            height: ${isLandscape ? '188mm' : '274mm'} !important;
+            height: ${isLandscape ? '199mm' : '286mm'} !important;
             min-height: 0 !important;
-            max-height: ${isLandscape ? '188mm' : '274mm'} !important;
+            max-height: ${isLandscape ? '199mm' : '286mm'} !important;
             display: flex !important;
             flex-direction: column !important;
             box-sizing: border-box !important;
@@ -945,7 +943,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
         }}
         className="no-print fixed -left-[99999px] top-0 pointer-events-none opacity-0 bg-white text-slate-900"
       >
-        <div data-measure="top-bar" className="flex items-center justify-between gap-2 mb-1.5 pb-1 border-b border-slate-200 text-xs font-mono">
+        <div data-measure="top-bar" className="flex items-center justify-between gap-2 mb-1 pb-1 border-b border-slate-200 text-xs font-mono">
           <span className="text-[10.5px] font-semibold text-slate-600">ใบนำส่ง</span>
           <span className="font-extrabold text-xs tabular-nums px-2 py-0.5 rounded bg-slate-100 border border-slate-300 text-slate-900">
             หน้าที่ 1 / 1
@@ -973,18 +971,6 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
             )}
           </tbody>
         </table>
-
-        <footer
-          data-measure="footer"
-          className="pt-1.5 border-t border-slate-300 text-[10px] text-slate-600 space-y-0.5"
-        >
-          <div className="font-mono">
-            รวมทั้งสิ้น 000 รายการ (ส่งมอบแล้ว 000 / รอส่งมอบ 000 / ติดนิติการ 000) · หน้านี้ลำดับที่ 1–25
-          </div>
-          <div className="text-[9px] font-sans">
-            * เลขพัสดุ: สีดำ = บาร์โค้ดปกติ · สีเขียวเข้ม = ขึ้นต้นด้วย &quot;PRT&quot; และเลขพัสดุที่ทำการสุ่มด้วยระบบ · สีแดง = พัสดุติดนิติการ
-          </div>
-        </footer>
       </div>
 
       {/* แถบเครื่องมือควบคุมการพิมพ์ (Toolbar) - ซ่อนอัตโนมัติเมื่อพิมพ์ด้วย class no-print */}
@@ -1009,7 +995,7 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 truncate">
-                  {currentDormSummaryText} · รวม {totalDisplayedParcels} ชิ้น · พิมพ์ซ้ำหัวกระดาษและแสดง &quot;หน้าที่ / &quot; ด้านบนทุกหน้า
+                  {currentDormSummaryText} · รวม {totalDisplayedParcels} ชิ้น · ขอบกระดาษ บน/ล่าง 5 มม. ซ้าย/ขวา 6 มม. · พิมพ์ซ้ำหัวกระดาษทุกหน้า
                 </p>
               </div>
             </div>
@@ -1197,23 +1183,20 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
           className="manifest-pages-stack flex flex-col items-center gap-6"
         >
           {resolvedPages.map(({ group, chunk, pageNumber, totalPages, pageKey }) => {
-            const signedCount = group.parcels.filter((p) => p.status === 'ส่งมอบสำเร็จ').length;
-            const unsignedCount = group.parcels.length - signedCount;
-            const legalHoldCount = group.parcels.filter((p) => p.status === 'ติดนิติการ').length;
             const colSpan = isLandscape ? 8 : 7;
 
             return (
               <section
                 key={pageKey}
                 aria-label={`ใบนำส่ง ${group.dormitory === 'ALL' ? 'ทุกหอพักรวม' : group.theme.name} หน้าที่ ${pageNumber} จาก ${totalPages}`}
-                className={`manifest-a4-page bg-white text-slate-900 shadow-xl rounded-sm p-[22px] border border-slate-300 flex flex-col box-border shrink-0 ${
+                className={`manifest-a4-page bg-white text-slate-900 shadow-xl rounded-sm py-[19px] px-[23px] border border-slate-300 flex flex-col box-border shrink-0 ${
                   isLandscape
                     ? 'w-[1123px] min-h-[794px]'
                     : 'w-[794px] min-h-[1123px]'
                 }`}
               >
                 {/* แถวบนสุด: เลขหน้าที่ (หน้าที่ X / Y) ด้านบนของทุกหน้า */}
-                <div className="flex items-center justify-between gap-2 mb-1.5 pb-1 border-b border-slate-200 text-xs font-mono shrink-0">
+                <div className="flex items-center justify-between gap-2 mb-1 pb-1 border-b border-slate-200 text-xs font-mono shrink-0">
                   <span className="text-[10.5px] font-semibold text-slate-600 truncate">
                     {group.dormitory === 'ALL'
                       ? 'ใบนำส่งรวมทุกหอพัก'
@@ -1250,24 +1233,6 @@ export const ManifestPrintPreviewModal: React.FC<ManifestPrintPreviewModalProps>
                     </tbody>
                   </table>
                 </div>
-
-                {/* ท้ายกระดาษ: สรุปข้อมูลรายการนำส่ง (ย้ายเลขหน้าที่ไปด้านบนของทุกหน้าแล้ว) */}
-                <footer className="mt-auto pt-1.5 border-t border-slate-300 text-[10px] text-slate-600 shrink-0 space-y-0.5">
-                  <div className="font-mono">
-                    รวมทั้งสิ้น <strong>{group.parcels.length}</strong> รายการ (ส่งมอบแล้ว {signedCount} / รอส่งมอบ {unsignedCount}
-                    {legalHoldCount > 0 ? ` / ติดนิติการ ${legalHoldCount}` : ''})
-                    {totalPages > 1 && chunk.parcels.length > 0 && (
-                      <span className="ml-1.5 text-slate-500">
-                        · หน้านี้ลำดับที่ {chunk.startIndex + 1}–{chunk.startIndex + chunk.parcels.length}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[9px] text-slate-500 font-sans">
-                    * เลขพัสดุ: <span className="font-bold text-slate-900">สีดำ</span> = บาร์โค้ดปกติ ·{' '}
-                    <span className="font-bold text-emerald-800">สีเขียวเข้ม</span> = ขึ้นต้นด้วย &quot;PRT&quot; และเลขพัสดุที่ทำการสุ่มด้วยระบบ ·{' '}
-                    <span className="font-bold text-red-600">สีแดง</span> = พัสดุติดนิติการ
-                  </div>
-                </footer>
               </section>
             );
           })}
